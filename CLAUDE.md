@@ -388,6 +388,35 @@ echo "$PUBLIC_URL/signup/$INVITE"
 - **ContainerManager is missing on DSM 7.0/older** → upgrade DSM or use the legacy "Docker" package (path `/var/packages/Docker/target/usr/bin/docker`).
 - **Cert leak via `op item get --format=json`**: NEVER use this command for items that have custom STRING fields holding secrets. Only the `CONCEALED`-typed fields are masked by jq filters; STRING fields print plaintext. Stick to `op run --env-file=...` exclusively (see Secrets section).
 
+### Cleaning up stranded / abandoned users
+
+Symptom: someone opened a `/signup/<token>` link in an in-app browser (Telegram, Slack, Mail) — that consumed the invite + created a user inside that webview's cookie jar, but the user can never come back to that account from a normal browser. Result: an orphaned user in `users.json` you want to remove before they sign up again under a slightly different name.
+
+```sh
+# 1. List users to find the orphan id (only id + name + createdAt — no secrets):
+ssh -i ~/.ssh/voice-clip-nas dimka@<NAS_HOST> \
+  'sudo -n /usr/local/bin/docker exec voice-clip cat /data/users.json' | jq '.[] | {id, name, createdAt}'
+
+# 2. Remove by id(s) — tiny inline Bun script that touches users.json + sessions.json + the per-user data dir atomically:
+cat > /tmp/cleanup.ts <<'TSEOF'
+import { readFile, writeFile, rm } from 'node:fs/promises'
+import { existsSync } from 'node:fs'; import { join } from 'node:path'
+const DATA = '/data'; const ids = process.argv.slice(2)
+const users = JSON.parse(await readFile(join(DATA, 'users.json'), 'utf8'))
+const sessions = JSON.parse(await readFile(join(DATA, 'sessions.json'), 'utf8'))
+await writeFile(join(DATA, 'users.json'), JSON.stringify(users.filter((u: any) => !ids.includes(u.id)), null, 2))
+await writeFile(join(DATA, 'sessions.json'), JSON.stringify(sessions.filter((s: any) => !ids.includes(s.userId)), null, 2))
+for (const id of ids) { const d = join(DATA, 'users', id); if (existsSync(d)) await rm(d, { recursive: true, force: true }) }
+console.log('done')
+TSEOF
+scp -i ~/.ssh/voice-clip-nas /tmp/cleanup.ts dimka@<NAS_HOST>:/tmp/
+ssh -i ~/.ssh/voice-clip-nas dimka@<NAS_HOST> \
+  'sudo -n /usr/local/bin/docker cp /tmp/cleanup.ts voice-clip:/tmp/cleanup.ts && \
+   sudo -n /usr/local/bin/docker exec voice-clip bun /tmp/cleanup.ts <ORPHAN_ID> [<ORPHAN_ID>...]'
+```
+
+Tip when sending the invite: ask the recipient to *long-press the link* and pick "Open in Safari" / "Open in Chrome" — Telegram's in-app browser is the most common source of this orphan-user bug, and it also blocks "Add to Home Screen" anyway.
+
 ### Disaster recovery — start over on the same NAS
 
 ```sh
