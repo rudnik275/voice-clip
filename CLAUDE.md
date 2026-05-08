@@ -287,6 +287,126 @@ That rsyncs sources to the NAS, scp's the local `.env` (gitignored, AI-blocked),
 
 **Version visibility:** the version string (`v7`, `v8`, …) is shown to the user in three places — bottom-right corner of the live UI (`#version-tag`), inside the `#boot-fallback` panel, and on `/offline`. There's also a plain-text `/version` endpoint. When bumping the SW cache, update **all four** spots: `web/sw.js` (`CACHE = 'voice-clip-vN'`), `web/index.html` (`#version-tag` and the `.version` span in `#boot-fallback`), `web/offline.html` (the `.version` span), and `src/server.ts` (the `APP_VERSION` constant). A test in `tests/pwa-shell.test.ts` enforces that they all match.
 
+## Deployment runbook — full re-deploy from zero
+
+If the NAS dies or you start over on a different host, this is the recipe. Every step is reversible/idempotent.
+
+### One-time prerequisites (~10 min)
+
+1. **On your local Mac:**
+   - `brew install 1password-cli hudochenkov/sshpass/sshpass` (op CLI + sshpass for the one-time ssh-copy-id).
+   - Install 1Password 8 desktop app, sign in to your account.
+   - In 1Password app: **Settings → Developer → Integrate with 1Password CLI** → ON.
+   - Verify: `op vault list` should trigger TouchID and print your vaults.
+
+2. **On the Synology NAS (via DSM web UI in browser):**
+   - **Control Panel → Terminal & SNMP → Enable SSH service** (port 22).
+   - **Package Center → Container Manager → Install** (provides `docker` + `docker compose`).
+   - **Package Center → Tailscale → Install → Sign in** to your Tailscale account. The NAS appears in your tailnet.
+   - **Tailscale Admin Console** (https://login.tailscale.com/admin/machines) → click the NAS → toggle **Funnel** on for that node.
+   - **Tailscale Admin → DNS → HTTPS Certificates → ON** (required for public *.ts.net DNS to be published).
+
+3. **Required 1Password items:**
+   - Vault `Personal` → item `NAS (local)` → fields `username`, `password` (CONCEALED — keep the password in the standard Password field, **not** in a custom STRING field; AI tools that filter only CONCEALED-typed fields will leak STRING fields). Note the item's UUID via `op item list --vault=Personal` — used in `.env.1password` references.
+
+### Bootstrap a fresh deploy
+
+```sh
+# 1. Clone & populate .env
+git clone <repo> voice-clip && cd voice-clip
+cp .env.example .env
+# Edit .env in your own terminal (not via AI):
+#   OPENAI_API_KEY  - from 1Password VoiceClip/GPT_API_TOKEN or platform.openai.com
+#   ADMIN_TOKEN     - openssl rand -hex 16
+#   NAS_HOST        - LAN IP / Tailscale name / *.local
+#   NAS_USER        - DSM admin username (default: dimka)
+#   REMOTE_DIR      - /volume1/docker/voice-clip (default)
+#   PUBLIC_URL      - leave EMPTY for first deploy; fill after step 4
+
+# 2. Verify .env.1password references match your 1Password layout
+#    (UUID of `NAS (local)` item — replace if you re-create the item)
+cat .env.1password
+
+# 3. One-time: register ssh-key on NAS (uses NAS_PASSWORD from 1Password)
+./scripts/with-secrets.sh ./scripts/setup-ssh-key.sh
+
+# 4. One-time: grant NOPASSWD sudo on NAS for /usr/local/bin/docker
+#    AND /var/packages/Tailscale/target/bin/tailscale (uses NAS_PASSWORD once)
+./scripts/with-secrets.sh ./scripts/setup-nas-docker.sh
+
+# 5. Tailscale Funnel: turn it on, get the public URL
+ssh -i ~/.ssh/voice-clip-nas dimka@<NAS_HOST> \
+  'sudo -n /var/packages/Tailscale/target/bin/tailscale funnel --bg http://127.0.0.1:8080'
+# Print the public URL
+ssh -i ~/.ssh/voice-clip-nas dimka@<NAS_HOST> \
+  'sudo -n /var/packages/Tailscale/target/bin/tailscale funnel status'
+# → put the printed https://<host>.tail-XXXX.ts.net into .env as PUBLIC_URL
+
+# 6. Deploy: rsync + scp .env + docker compose up -d --build
+./scripts/deploy.sh
+# Smoke: curl <PUBLIC_URL>/version → "v8" (or whatever current APP_VERSION is)
+
+# 7. Bootstrap first user (admin self-signup):
+INVITE=$(set -a; source .env; set +a; \
+  curl -fsS -X POST -H "X-Admin-Token: $ADMIN_TOKEN" \
+    "$PUBLIC_URL/admin/invites" | jq -r .token)
+echo "Open on phone: $PUBLIC_URL/signup/$INVITE"
+# - User opens link in phone Safari
+# - Enters name → gets session cookie + lands at /
+# - Share → "Add to Home Screen" — PWA icon ready
+
+# 8. (Optional) Install Mac daemon — opens Cmd+V flow per-user.
+# In the PWA → tap user pill (top-right) → "📎 Подключить Mac"
+# This copies a `curl ... | bash` command to clipboard. Paste into Terminal
+# on the user's Mac. The installer:
+#   - drops daemon source into ~/.voice-clip-daemon/
+#   - registers ~/Library/LaunchAgents/com.voiceclip.daemon.plist
+#   - launchctl load → daemon runs at login, holds SSE stream, pbcopy's clips
+```
+
+### Adding more users later
+
+```sh
+# Generate a one-time invite (admin):
+INVITE=$(set -a; source .env; set +a; \
+  curl -fsS -X POST -H "X-Admin-Token: $ADMIN_TOKEN" \
+    "$PUBLIC_URL/admin/invites" | jq -r .token)
+echo "$PUBLIC_URL/signup/$INVITE"
+# Send the URL to the new user. They sign up — own per-user history,
+# isolated from yours. Aggregate cost.json reflects everyone's spend.
+```
+
+### Common gotchas (and the lines in scripts that handle them)
+
+- **Synology sshd password fallback after publickey** → SSH_OPTS in deploy.sh include `BatchMode=yes` + `IdentitiesOnly=yes`. Without these rsync hangs on "Permission denied, please try again" even though publickey already succeeded.
+- **rsync "Permission denied" but key works for `ssh exec`** → remote rsync isn't in non-interactive PATH on Synology. Pin it: `--rsync-path=/usr/bin/rsync`.
+- **scp dies with "subsystem request failed on channel 0"** → DSM ships without SFTP subsystem; use legacy `scp -O`.
+- **DSM admin's sudo asks for password every time** → run `./scripts/with-secrets.sh ./scripts/setup-nas-docker.sh` once. Writes a tight `/etc/sudoers.d/<user>-voice-clip-docker` entry whitelisting only the docker + tailscale binaries.
+- **`docker compose up` fails with "Bind mount failed: '...data' does not exist"** → deploy.sh creates `${REMOTE_DIR}/data` ahead of build. Recreate manually with `mkdir -p` if you ever wipe the host volume.
+- **Public URL is NXDOMAIN locally even though Funnel is ON** → local resolver cached the negative response from before Funnel was enabled. Auth NS still has the record (verify with `dig @<one-of-ts.net-NS> <hostname>`). It propagates within a few minutes; meanwhile use `curl --resolve <host>:443:<tailscale-anycast-IP>`.
+- **Funnel command says "Funnel is not enabled on your tailnet"** → click the enable link from the error message (one-off in Tailscale Admin Console), or visit the Admin → device → Funnel toggle.
+- **ContainerManager is missing on DSM 7.0/older** → upgrade DSM or use the legacy "Docker" package (path `/var/packages/Docker/target/usr/bin/docker`).
+- **Cert leak via `op item get --format=json`**: NEVER use this command for items that have custom STRING fields holding secrets. Only the `CONCEALED`-typed fields are masked by jq filters; STRING fields print plaintext. Stick to `op run --env-file=...` exclusively (see Secrets section).
+
+### Disaster recovery — start over on the same NAS
+
+```sh
+# Stop + remove container; keep data:
+ssh -i ~/.ssh/voice-clip-nas dimka@<NAS_HOST> \
+  'cd /volume1/docker/voice-clip && sudo -n /usr/local/bin/docker compose down'
+
+# Wipe state (users, history, cost — IRREVERSIBLE):
+ssh -i ~/.ssh/voice-clip-nas dimka@<NAS_HOST> \
+  'sudo -n /usr/local/bin/docker run --rm -v /volume1/docker/voice-clip/data:/data alpine sh -c "rm -rf /data/users /data/recordings /data/users.json /data/invites.json /data/sessions.json /data/cost.json /data/.last-cleanup; echo \"[]\" > /data/users.json; echo \"[]\" > /data/invites.json; echo \"[]\" > /data/sessions.json"'
+
+# Re-deploy:
+./scripts/deploy.sh
+```
+
+### Migrate existing data into a fresh user (when someone signs up after a re-deploy)
+
+`scripts/migrate-existing-data.sh` is a one-shot for when you have legacy `data/history.json` + `data/cost.json` on your Mac that you want under a freshly-signed-up user. It's brittle around multi-user merges (so we ended up wiping for the first deploy), but the right starting shape if you ever need it.
+
 ## Secrets
 
 **App secrets** (`OPENAI_API_KEY`, `ADMIN_TOKEN`) live in plain `.env` (gitignored, AI-blocked by the global `Read .env*` rule). User fills `.env` by hand from `.env.example`.
