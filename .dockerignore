@@ -1,0 +1,28 @@
+# Local-only / never goes in the image.
+node_modules
+data
+certs
+.env
+.env.*
+.git
+.gitignore
+.idea
+.vscode
+.DS_Store
+*.tgz
+out
+dist
+coverage
+*.lcov
+
+# Tests + dev config — not needed in runtime image (CMD doesn't reference them).
+tests
+.eslintcache
+.cache
+
+# Markdown / one-off transcript dumps.
+*.md
+conversation-*.txt
+
+# Local PM2 / launchd artefacts.
+ecosystem.config.*
