@@ -232,6 +232,93 @@ describe('auth + multi-user', () => {
     expect((await fetch(`${s.baseUrl}/me`, { headers: { cookie } })).status).toBe(401)
   })
 
+  test('magic-link: admin generates URL → opening it logs the SAME existing user into a new browser', async () => {
+    // Sign up dima from device A
+    const invite = await createInviteAdmin(s.baseUrl)
+    const cookieA = await signUp(s.baseUrl, invite, 'dima')
+    const meA = (await (await fetch(`${s.baseUrl}/me`, { headers: { cookie: cookieA } })).json()) as MeResponse
+
+    // Admin asks for a magic-link bound to dima's userId (simulating "I want to
+    // also use my iPad as the same dima").
+    const linkResp = await fetch(`${s.baseUrl}/admin/magic-link`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Admin-Token': ADMIN_TOKEN },
+      body: JSON.stringify({ userId: meA.id }),
+    })
+    expect(linkResp.ok).toBe(true)
+    const link = (await linkResp.json()) as { token: string; url: string; userId: string; userName: string }
+    expect(link.userId).toBe(meA.id)
+    expect(link.userName).toBe('dima')
+    expect(link.url).toMatch(/\/login\//)
+
+    // Open magic-link from device B (no cookie). Server replies 303 + Set-Cookie.
+    const r = await fetch(`${s.baseUrl}/login/${link.token}`, { redirect: 'manual' })
+    expect(r.status).toBe(303)
+    expect(r.headers.get('location')).toBe('/')
+    const setCookie = r.headers.get('set-cookie')
+    expect(setCookie).toMatch(/^session=/)
+    const cookieB = setCookie!.split(';')[0]!
+
+    // Device B's session resolves to the SAME user
+    const meB = (await (await fetch(`${s.baseUrl}/me`, { headers: { cookie: cookieB } })).json()) as MeResponse
+    expect(meB.id).toBe(meA.id)
+    expect(meB.name).toBe('dima')
+
+    // History is naturally shared (same userId)
+    const aliceUpload = await fetch(`${s.baseUrl}/upload`, {
+      method: 'POST',
+      headers: { cookie: cookieA },
+      body: audioForm('online', '2026-05-08T10:00:00Z'),
+    })
+    expect(aliceUpload.ok).toBe(true)
+    const fromA = (await (await fetch(`${s.baseUrl}/history`, { headers: { cookie: cookieA } })).json()) as unknown[]
+    const fromB = (await (await fetch(`${s.baseUrl}/history`, { headers: { cookie: cookieB } })).json()) as unknown[]
+    expect(fromA.length).toBe(1)
+    expect(fromB.length).toBe(1)
+  })
+
+  test('magic-link: single-use — second open of the same link → 410', async () => {
+    const invite = await createInviteAdmin(s.baseUrl)
+    const cookie = await signUp(s.baseUrl, invite, 'dima')
+    const me = (await (await fetch(`${s.baseUrl}/me`, { headers: { cookie } })).json()) as MeResponse
+    const link = (await (await fetch(`${s.baseUrl}/admin/magic-link`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Admin-Token': ADMIN_TOKEN },
+      body: JSON.stringify({ userId: me.id }),
+    })).json()) as { token: string }
+
+    expect((await fetch(`${s.baseUrl}/login/${link.token}`, { redirect: 'manual' })).status).toBe(303)
+    expect((await fetch(`${s.baseUrl}/login/${link.token}`, { redirect: 'manual' })).status).toBe(410)
+  })
+
+  test('magic-link: bad userId → 404; missing userId → 400; non-admin → 403', async () => {
+    const r404 = await fetch(`${s.baseUrl}/admin/magic-link`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Admin-Token': ADMIN_TOKEN },
+      body: JSON.stringify({ userId: 'no-such-user' }),
+    })
+    expect(r404.status).toBe(404)
+
+    const r400 = await fetch(`${s.baseUrl}/admin/magic-link`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Admin-Token': ADMIN_TOKEN },
+      body: JSON.stringify({}),
+    })
+    expect(r400.status).toBe(400)
+
+    const r403 = await fetch(`${s.baseUrl}/admin/magic-link`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: 'whatever' }),
+    })
+    expect(r403.status).toBe(403)
+  })
+
+  test('magic-link: opening a bogus token → 410', async () => {
+    const r = await fetch(`${s.baseUrl}/login/not-a-real-magic-token`, { redirect: 'manual' })
+    expect(r.status).toBe(410)
+  })
+
   test('admin disabled when ADMIN_TOKEN is empty: /admin/invites → 403 even with empty header', async () => {
     const dir2 = await mkdtemp(join(tmpdir(), 'voice-clip-no-admin-'))
     const noAdmin = await startServer({

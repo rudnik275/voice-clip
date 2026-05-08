@@ -8,6 +8,7 @@ import { createCostStore, type CostStore } from './cost-store'
 import { createHistoryStore, type HistoryItem, type HistoryStore } from './history-store'
 import { createUsersStore, type UsersStore, type User } from './users-store'
 import { createInvitesStore, type InvitesStore } from './invites-store'
+import { createMagicLinksStore, type MagicLinksStore } from './magic-links-store'
 import { createSessionsStore, type SessionsStore } from './sessions-store'
 import { createPendingClipsStore, type PendingClipsStore } from './pending-clips-store'
 import { createLiveBus, type LiveBus } from './live-bus'
@@ -28,12 +29,13 @@ const DAEMON_SRC_PATH = new URL('../daemon/index.ts', import.meta.url).pathname
 const DAEMON_PLIST_PATH = new URL('../daemon/com.voiceclip.daemon.plist.tmpl', import.meta.url).pathname
 const DAEMON_INSTALL_PATH = new URL('../daemon/install.sh.tmpl', import.meta.url).pathname
 
-const APP_VERSION = 'v8'
+const APP_VERSION = 'v9'
 
 export interface ServerDeps {
   dataDir?: string
   users?: UsersStore
   invites?: InvitesStore
+  magicLinks?: MagicLinksStore
   sessions?: SessionsStore
   audio?: AudioStorage
   aggregateCosts?: CostStore
@@ -78,6 +80,7 @@ export async function startServer(deps: ServerDeps = {}) {
   const dataDir = deps.dataDir ?? config.dataDir
   const users = deps.users ?? createUsersStore(dataDir)
   const invites = deps.invites ?? createInvitesStore(dataDir)
+  const magicLinks = deps.magicLinks ?? createMagicLinksStore(dataDir)
   const sessions = deps.sessions ?? createSessionsStore(dataDir)
   const audio = deps.audio ?? createAudioStorage(dataDir)
   const aggregateCosts = deps.aggregateCosts ?? createCostStore(dataDir)
@@ -251,6 +254,53 @@ export async function startServer(deps: ServerDeps = {}) {
           const inv = await invites.create()
           const url = publicUrl ? `${publicUrl}/signup/${inv.token}` : `/signup/${inv.token}`
           return Response.json({ token: inv.token, url, createdAt: inv.createdAt })
+        },
+      },
+      '/admin/magic-link': {
+        // Generate a one-time login URL that signs an EXISTING user into a
+        // new browser/device. Solves "I'm signed in on my phone, how do I
+        // also use the PWA on my iPad without creating a second account?".
+        // Body: { userId, ttlSec? } — ttlSec defaults to 300 (5 min).
+        POST: async (req) => {
+          const ok = checkAdmin(req)
+          if (ok !== true) return ok
+          const body = (await req.json().catch(() => ({}))) as {
+            userId?: string
+            ttlSec?: number
+          }
+          if (!body.userId) return Response.json({ error: 'userId required' }, { status: 400 })
+          const user = await users.get(body.userId)
+          if (!user) return Response.json({ error: 'user not found' }, { status: 404 })
+          const ttl = typeof body.ttlSec === 'number' && body.ttlSec > 0 ? body.ttlSec : 300
+          const link = await magicLinks.create(user.id, ttl)
+          const url = publicUrl ? `${publicUrl}/login/${link.token}` : `/login/${link.token}`
+          return Response.json({
+            token: link.token,
+            url,
+            userId: user.id,
+            userName: user.name,
+            expiresAt: link.expiresAt,
+          })
+        },
+      },
+      '/login/:magicToken': {
+        // Single-use, time-limited login: consumes the magic-link, creates a
+        // session, sets the cookie, redirects to /. After this the device
+        // is logged in as the same user as on whatever device requested the
+        // magic-link (typically via /admin/magic-link).
+        GET: async (req) => {
+          const link = await magicLinks.consume(req.params.magicToken)
+          if (!link) {
+            return htmlResponse(Bun.file(SIGNUP_NEEDED_PATH), 410)
+          }
+          const session = await sessions.create(link.userId)
+          return new Response(null, {
+            status: 303,
+            headers: {
+              Location: '/',
+              'Set-Cookie': setSessionCookieHeader(session.token, secureCookie),
+            },
+          })
         },
       },
       '/cost': {
