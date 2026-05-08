@@ -32,13 +32,27 @@ describe('PWA shell — static guarantees', () => {
     expect(sw).toMatch(/addEventListener\(['"]fetch['"]/)
   })
 
-  test('index.html: inline 4s timer triggers when app failed to initialize', async () => {
+  test('index.html: has inline #boot-fallback element with INLINE <style> rules', async () => {
+    // Critical: the offline panel must render even if the external <link href=style.css>
+    // fails to load. Therefore its styles must be in an inline <style> block within
+    // index.html, NOT in style.css.
     const html = await readWebFile('index.html')
-    // Has a setTimeout(..., 4000) referencing __voiceClipReady (any redirect path,
-    // direct or via a helper, is fine).
+    expect(html).toMatch(/<div\s+id=["']boot-fallback["']/)
+    // Inline <style> block exists and contains rules for #boot-fallback
+    expect(html).toMatch(/<style>[\s\S]*#boot-fallback[\s\S]*?<\/style>/)
+  })
+
+  test('index.html: boot fallback has retry action (reload or back to /)', async () => {
+    const html = await readWebFile('index.html')
+    expect(html).toMatch(/location\.reload\(\)|location\.replace\(['"]\/['"]\)/)
+  })
+
+  test('index.html: inline 4s timer reveals boot fallback (no redirect needed)', async () => {
+    const html = await readWebFile('index.html')
     expect(html).toMatch(/setTimeout\([\s\S]{0,300}__voiceClipReady[\s\S]{0,300},\s*4000\s*\)/)
-    // Redirects to /offline somewhere in the inline script.
-    expect(html).toMatch(/location\.replace\(['"]\/offline['"]\)/)
+    // Reveals the inline element rather than navigating somewhere else —
+    // navigation can also fail when offline.
+    expect(html).toMatch(/boot-fallback/)
     // Regression guard: the timer must not be inside an addEventListener('load', ...)
     // wrapper, which can stall up to 30s waiting for hung resource fetches.
     const setTimeoutIdx = html.indexOf('setTimeout')
@@ -46,15 +60,14 @@ describe('PWA shell — static guarantees', () => {
     expect(before).not.toMatch(/addEventListener\(['"]load['"]/)
   })
 
-  test('index.html: error listener catches asset (script/css) load failure', async () => {
+  test('index.html: error listener reveals boot fallback on asset load failure', async () => {
     // When the bundled JS or CSS fails to load (offline + cache miss), the page
-    // would otherwise sit blank for 4s waiting for the timeout fallback. An
-    // error listener on the window catches script/stylesheet failures and
-    // redirects to /offline immediately.
+    // reveals the inline #boot-fallback panel — this works even if a redirect
+    // target like /offline is itself uncached.
     const html = await readWebFile('index.html')
     expect(html).toMatch(/addEventListener\(\s*['"]error['"]/)
     expect(html).toMatch(/SCRIPT|LINK/)
-    expect(html).toMatch(/location\.replace\(['"]\/offline['"]\)/)
+    expect(html).toMatch(/boot-fallback/)
   })
 
   test('offline.html: self-contained — no external scripts or stylesheets', async () => {

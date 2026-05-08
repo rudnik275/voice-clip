@@ -9,40 +9,82 @@
     <meta name="theme-color" content="#07070b" />
     <title>VoiceClip</title>
     <link rel="manifest" href="./manifest.webmanifest" />
+    <style>
+      /* Inline boot styles — render even if external stylesheet fails to load.
+         Covers the "PWA opened offline + cache miss on bundled CSS" case. */
+      html, body { margin: 0; padding: 0; height: 100%; background: #07070b; color: #f1f1f7; }
+      body { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+      #boot-fallback {
+        position: fixed; inset: 0; z-index: 9999;
+        background: #07070b; color: #f1f1f7;
+        display: none; place-items: center; text-align: center;
+        padding: 20px;
+      }
+      #boot-fallback.shown { display: grid; }
+      #boot-fallback .badge {
+        display: inline-block;
+        font-size: 10px; font-weight: 700; letter-spacing: 0.18em;
+        background: rgba(255, 100, 100, 0.18); color: #ff8a93;
+        border: 1px solid rgba(255, 100, 100, 0.30);
+        padding: 5px 12px; border-radius: 999px; margin-bottom: 20px;
+      }
+      #boot-fallback h1 { font-size: 22px; font-weight: 600; margin: 0 0 12px; letter-spacing: -0.01em; }
+      #boot-fallback p { font-size: 14px; line-height: 1.5; color: #8b8b9c; max-width: 320px; margin: 0 0 24px; }
+      #boot-fallback button {
+        font-size: 15px; font-weight: 600; font-family: inherit;
+        padding: 14px 26px; color: white;
+        background: linear-gradient(135deg, #7383ff, #b15eff);
+        border: none; border-radius: 14px; cursor: pointer;
+        box-shadow: 0 8px 24px rgba(115, 131, 255, 0.35);
+      }
+    </style>
     <link rel="stylesheet" href="./style.css" />
     <script>
-      // Offline guard: if the bundled app shell can't load (offline + cache miss
-      // on the hashed Bun bundle URLs), bounce to /offline.html instead of
-      // showing a white screen. Two triggers:
-      //   1. Any <script> or stylesheet <link> failing to load → redirect now.
-      //   2. After 4s if window.__voiceClipReady is still false → redirect.
+      // Boot fallback: if the bundled JS/CSS can't load (offline + cache miss
+      // on the hashed Bun bundle URLs), reveal the inline OFFLINE panel.
+      // No redirect involved — that could fail too if /offline isn't cached.
+      // Two triggers:
+      //   1. Any <script> or <link rel=stylesheet> failing to load → reveal now.
+      //   2. After 4s with __voiceClipReady still false → reveal.
       (function () {
-        var redirected = false
-        function goOffline() {
-          if (redirected) return
-          redirected = true
-          location.replace('/offline')
+        var revealed = false
+        function showFallback() {
+          if (revealed) return
+          revealed = true
+          var el = document.getElementById('boot-fallback')
+          if (el) {
+            el.classList.add('shown')
+            el.setAttribute('aria-hidden', 'false')
+          }
         }
         window.addEventListener(
           'error',
           function (e) {
             var t = e && e.target
             if (!t || !t.tagName) return
-            var tag = t.tagName
             var rel = t.getAttribute && t.getAttribute('rel')
-            if (tag === 'SCRIPT' || (tag === 'LINK' && rel === 'stylesheet')) {
-              goOffline()
+            if (t.tagName === 'SCRIPT' || (t.tagName === 'LINK' && rel === 'stylesheet')) {
+              showFallback()
             }
           },
           true,
         )
         setTimeout(function () {
-          if (!window.__voiceClipReady) goOffline()
+          if (!window.__voiceClipReady) showFallback()
         }, 4000)
       })()
     </script>
   </head>
   <body>
+    <div id="boot-fallback" aria-hidden="true">
+      <div>
+        <span class="badge">OFFLINE</span>
+        <h1>Mac не отвечает</h1>
+        <p>Не получается загрузить приложение. Подключись к домашнему wifi и попробуй снова.</p>
+        <button type="button" onclick="location.reload()">Попробовать снова</button>
+      </div>
+    </div>
+
     <header class="topbar">
       <button id="history-btn" type="button" class="topbar-btn" aria-label="History">
         <svg viewBox="0 0 24 24" aria-hidden="true">
