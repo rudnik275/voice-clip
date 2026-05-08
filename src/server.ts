@@ -149,6 +149,11 @@ export async function startServer(deps: ServerDeps = {}) {
 
   return Bun.serve({
     port,
+    // Bun's default idleTimeout is 10s — too short for SSE streams. With 10s
+    // the /events connection gets killed before our keepalive can cover it
+    // and Tailscale Funnel returns 502 to the daemon. 120s gives the
+    // application-level keepalive (20s) room to breathe.
+    idleTimeout: 120,
     ...(tls ? { tls } : {}),
     routes: {
       '/': indexPage,
@@ -397,15 +402,17 @@ export async function startServer(deps: ServerDeps = {}) {
               // Subscribe to live events.
               unsubscribe = liveBus.subscribe(userId, send)
 
-              // Heartbeat every 25s — keeps intermediate proxies / CF Tunnel from
-              // killing the stream as idle.
+              // Heartbeat every 20s — keeps Tailscale Funnel + Bun.serve's
+              // idleTimeout (120s) from declaring the stream idle. Setting
+              // this lower than the smallest upstream timeout / 4 leaves
+              // plenty of margin for jitter.
               const hb = setInterval(() => {
                 try {
                   controller.enqueue(enc.encode(`: keepalive\n\n`))
                 } catch {
                   clearInterval(hb)
                 }
-              }, 25_000)
+              }, 20_000)
 
               const onAbort = (): void => {
                 clearInterval(hb)
