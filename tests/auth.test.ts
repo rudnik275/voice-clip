@@ -251,8 +251,18 @@ describe('auth + multi-user', () => {
     expect(link.userName).toBe('dima')
     expect(link.url).toMatch(/\/login\//)
 
-    // Open magic-link from device B (no cookie). Server replies 303 + Set-Cookie.
-    const r = await fetch(`${s.baseUrl}/login/${link.token}`, { redirect: 'manual' })
+    // GET /login/:token — no cookie set, no token consumed. Just the form.
+    // (This is also what link-preview bots in iMessage / Slack would hit; it
+    // must NOT consume.)
+    const peekResp = await fetch(`${s.baseUrl}/login/${link.token}`, { redirect: 'manual' })
+    expect(peekResp.status).toBe(200)
+    expect(peekResp.headers.get('set-cookie')).toBeNull()
+
+    // Idempotency check: a second GET still returns 200 (token not yet consumed).
+    expect((await fetch(`${s.baseUrl}/login/${link.token}`, { redirect: 'manual' })).status).toBe(200)
+
+    // POST consumes — that's the actual login.
+    const r = await fetch(`${s.baseUrl}/login/${link.token}`, { method: 'POST', redirect: 'manual' })
     expect(r.status).toBe(303)
     expect(r.headers.get('location')).toBe('/')
     const setCookie = r.headers.get('set-cookie')
@@ -287,8 +297,35 @@ describe('auth + multi-user', () => {
       body: JSON.stringify({ userId: me.id }),
     })).json()) as { token: string }
 
-    expect((await fetch(`${s.baseUrl}/login/${link.token}`, { redirect: 'manual' })).status).toBe(303)
+    expect((await fetch(`${s.baseUrl}/login/${link.token}`, { method: 'POST', redirect: 'manual' })).status).toBe(303)
+    expect((await fetch(`${s.baseUrl}/login/${link.token}`, { method: 'POST', redirect: 'manual' })).status).toBe(410)
+    // After consume, even GET returns 410 (no longer valid)
     expect((await fetch(`${s.baseUrl}/login/${link.token}`, { redirect: 'manual' })).status).toBe(410)
+  })
+
+  test('magic-link peek does NOT consume — confirming preview-bot safety', async () => {
+    const invite = await createInviteAdmin(s.baseUrl)
+    const cookie = await signUp(s.baseUrl, invite, 'dima')
+    const me = (await (await fetch(`${s.baseUrl}/me`, { headers: { cookie } })).json()) as MeResponse
+    const link = (await (await fetch(`${s.baseUrl}/admin/magic-link`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Admin-Token': ADMIN_TOKEN },
+      body: JSON.stringify({ userId: me.id }),
+    })).json()) as { token: string }
+
+    // Simulate a preview bot hitting the link 3 times — should not consume.
+    for (let i = 0; i < 3; i++) {
+      expect((await fetch(`${s.baseUrl}/login/${link.token}`)).status).toBe(200)
+    }
+
+    // /peek endpoint returns user metadata without consuming.
+    const peekData = (await (await fetch(`${s.baseUrl}/login/${link.token}/peek`)).json()) as {
+      userName: string
+    }
+    expect(peekData.userName).toBe('dima')
+
+    // Real human POST still works.
+    expect((await fetch(`${s.baseUrl}/login/${link.token}`, { method: 'POST', redirect: 'manual' })).status).toBe(303)
   })
 
   test('magic-link: bad userId → 404; missing userId → 400; non-admin → 403', async () => {
@@ -314,9 +351,11 @@ describe('auth + multi-user', () => {
     expect(r403.status).toBe(403)
   })
 
-  test('magic-link: opening a bogus token → 410', async () => {
-    const r = await fetch(`${s.baseUrl}/login/not-a-real-magic-token`, { redirect: 'manual' })
-    expect(r.status).toBe(410)
+  test('magic-link: opening a bogus token → 410 on both GET and POST', async () => {
+    expect((await fetch(`${s.baseUrl}/login/not-a-real-magic-token`, { redirect: 'manual' })).status).toBe(410)
+    expect(
+      (await fetch(`${s.baseUrl}/login/not-a-real-magic-token`, { method: 'POST', redirect: 'manual' })).status,
+    ).toBe(410)
   })
 
   test('admin disabled when ADMIN_TOKEN is empty: /admin/invites → 403 even with empty header', async () => {

@@ -25,11 +25,12 @@ import offlinePage from '../web/offline.html'
 const SW_PATH = new URL('../web/sw.js', import.meta.url).pathname
 const SIGNUP_PATH = new URL('../web/signup.html', import.meta.url).pathname
 const SIGNUP_NEEDED_PATH = new URL('../web/signup-needed.html', import.meta.url).pathname
+const LOGIN_PATH = new URL('../web/login.html', import.meta.url).pathname
 const DAEMON_SRC_PATH = new URL('../daemon/index.ts', import.meta.url).pathname
 const DAEMON_PLIST_PATH = new URL('../daemon/com.voiceclip.daemon.plist.tmpl', import.meta.url).pathname
 const DAEMON_INSTALL_PATH = new URL('../daemon/install.sh.tmpl', import.meta.url).pathname
 
-const APP_VERSION = 'v9'
+const APP_VERSION = 'v10'
 
 export interface ServerDeps {
   dataDir?: string
@@ -284,14 +285,22 @@ export async function startServer(deps: ServerDeps = {}) {
         },
       },
       '/login/:magicToken': {
-        // Single-use, time-limited login: consumes the magic-link, creates a
-        // session, sets the cookie, redirects to /. After this the device
-        // is logged in as the same user as on whatever device requested the
-        // magic-link (typically via /admin/magic-link).
+        // GET renders a "Continue" page WITHOUT consuming the token. POST
+        // is what actually consumes + sets the cookie. This split prevents
+        // link-preview bots in iMessage / Slack / Telegram (which do GET to
+        // render rich previews) from burning the single-use token before
+        // the human gets a chance to click.
         GET: async (req) => {
-          const link = await magicLinks.consume(req.params.magicToken)
+          const link = await magicLinks.peek(req.params.magicToken)
           if (!link) {
             return htmlResponse(Bun.file(SIGNUP_NEEDED_PATH), 410)
+          }
+          return htmlResponse(Bun.file(LOGIN_PATH), 200)
+        },
+        POST: async (req) => {
+          const link = await magicLinks.consume(req.params.magicToken)
+          if (!link) {
+            return Response.json({ error: 'magic-link expired or already used' }, { status: 410 })
           }
           const session = await sessions.create(link.userId)
           return new Response(null, {
@@ -301,6 +310,18 @@ export async function startServer(deps: ServerDeps = {}) {
               'Set-Cookie': setSessionCookieHeader(session.token, secureCookie),
             },
           })
+        },
+      },
+      '/login/:magicToken/peek': {
+        // Read-only metadata for the GET-rendered login page (so it can show
+        // "Привет, <name>"). Does NOT consume the token. Safe to call any
+        // number of times.
+        GET: async (req) => {
+          const link = await magicLinks.peek(req.params.magicToken)
+          if (!link) return Response.json({ error: 'invalid' }, { status: 410 })
+          const user = await users.get(link.userId)
+          if (!user) return Response.json({ error: 'invalid' }, { status: 410 })
+          return Response.json({ userId: user.id, userName: user.name, expiresAt: link.expiresAt })
         },
       },
       '/cost': {

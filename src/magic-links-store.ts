@@ -11,6 +11,10 @@ export interface MagicLink {
 
 export interface MagicLinksStore {
   create(userId: string, ttlSec: number): Promise<MagicLink>
+  // Read-only validity check — does NOT mutate state. Used by GET /login
+  // to render the "Continue" page without burning the token to URL preview
+  // bots (iMessage, Slack, etc) that auto-fetch links.
+  peek(token: string): Promise<MagicLink | null>
   // Atomic consume: returns the link only if it exists, isn't used, and
   // hasn't expired. Marks usedAt on success.
   consume(token: string): Promise<MagicLink | null>
@@ -63,6 +67,14 @@ export function createMagicLinksStore(dataDir: string): MagicLinksStore {
         await save(items)
         return link
       })
+    },
+
+    async peek(token) {
+      const items = await load()
+      const link = items.find((x) => x.token === token)
+      if (!link || link.usedAt) return null
+      if (new Date(link.expiresAt).getTime() < Date.now()) return null
+      return link
     },
 
     async consume(token) {
