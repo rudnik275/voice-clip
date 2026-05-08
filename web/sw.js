@@ -2,7 +2,7 @@
 // API requests (/upload, /cost, /history*) always go to network; offline queueing
 // is handled by the page via IndexedDB.
 
-const CACHE = 'voice-clip-v3'
+const CACHE = 'voice-clip-v4'
 const PRECACHE_URLS = ['/', '/offline']
 
 self.addEventListener('install', (event) => {

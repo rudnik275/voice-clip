@@ -218,5 +218,9 @@ Typography: SF Pro Display / system stack, letter-spacing `-0.01em` for body, `0
 
 ## Deployment / lifecycle
 
-PM2 process is named `voice-clip` (was `tg-stt`). After non-trivial server changes: `pm2 restart voice-clip`. After SW changes: hard-refresh the PWA on the phone (or close + reopen from home screen).
+PM2 process is named `voice-clip`. After server-side changes: `pm2 restart voice-clip`.
+
+**PWA update propagation:** the page periodically calls `registration.update()` (every 30 min, plus on `online` and `visibilitychange`). When a new SW takes control (`controllerchange` fires after the first install), the page auto-reloads — so the tablet picks up new builds without manual close+reopen.
+
+**Important — cache busting:** when you ship changes to `web/` assets (HTML, bundled JS/CSS, but NOT `sw.js` itself), the SW byte-content doesn't change and the browser won't trigger an update cycle. **Bump `CACHE` in `web/sw.js`** (e.g. `voice-clip-v3` → `voice-clip-v4`) so the SW changes byte-wise, the activate handler clears the previous cache, and clients reload to fetch fresh.
 

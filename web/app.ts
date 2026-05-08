@@ -818,11 +818,24 @@ document.addEventListener('visibilitychange', () => {
 
 // === Service Worker registration ===
 if ('serviceWorker' in navigator) {
+  // Auto-reload when a NEW SW takes control (after an update). Skip the very
+  // first install (controller goes from null → set), only reload when an
+  // already-running PWA gets superseded by a fresh SW.
+  const hadController = !!navigator.serviceWorker.controller
+  let reloading = false
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (hadController && !reloading) {
+      reloading = true
+      location.reload()
+    }
+  })
+
   navigator.serviceWorker
     .register('/sw.js')
-    .then(async () => {
+    .then(async (registration) => {
       try {
         await navigator.serviceWorker.ready
+
         // Tell the SW about Bun's hashed asset URLs we just loaded so it can
         // cache them — they were fetched before the SW activated and therefore
         // missed runtime caching.
@@ -846,6 +859,18 @@ if ('serviceWorker' in navigator) {
       } catch {
         // best effort — if precache messaging fails, runtime caching still works
       }
+
+      // Periodic update probe so already-running PWAs pick up new builds
+      // without requiring a manual close+reopen. registration.update() is
+      // browser-rate-limited; calling more often is harmless.
+      const checkForUpdate = (): void => {
+        void registration.update().catch(() => {})
+      }
+      window.setInterval(checkForUpdate, 30 * 60_000)
+      window.addEventListener('online', checkForUpdate)
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) checkForUpdate()
+      })
     })
     .catch((err) => {
       console.warn('SW register failed:', err)
