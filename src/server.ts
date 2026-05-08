@@ -24,6 +24,9 @@ import offlinePage from '../web/offline.html'
 const SW_PATH = new URL('../web/sw.js', import.meta.url).pathname
 const SIGNUP_PATH = new URL('../web/signup.html', import.meta.url).pathname
 const SIGNUP_NEEDED_PATH = new URL('../web/signup-needed.html', import.meta.url).pathname
+const DAEMON_SRC_PATH = new URL('../daemon/index.ts', import.meta.url).pathname
+const DAEMON_PLIST_PATH = new URL('../daemon/com.voiceclip.daemon.plist.tmpl', import.meta.url).pathname
+const DAEMON_INSTALL_PATH = new URL('../daemon/install.sh.tmpl', import.meta.url).pathname
 
 const APP_VERSION = 'v8'
 
@@ -444,6 +447,42 @@ export async function startServer(deps: ServerDeps = {}) {
             if (await pending.ack(id)) acked++
           }
           return Response.json({ acked })
+        },
+      },
+      '/install/voice-clip-daemon': {
+        GET: async (req) => {
+          // Auth: daemon-token in URL (curl-from-Mac doesn't have a session
+          // cookie). The token is the long-lived secret the daemon will use
+          // anyway; if it leaks here it's no worse than if it leaks anywhere.
+          const url = new URL(req.url)
+          const token = url.searchParams.get('token') ?? ''
+          const user = await users.getByDaemonToken(token)
+          if (!user) return forbidden()
+          const target = publicUrl || `${url.protocol}//${url.host}`
+          const [installTmpl, daemonSrc, plistTmpl] = await Promise.all([
+            Bun.file(DAEMON_INSTALL_PATH).text(),
+            Bun.file(DAEMON_SRC_PATH).text(),
+            Bun.file(DAEMON_PLIST_PATH).text(),
+          ])
+          // Plist template uses __HOME__ placeholders that launchctl resolves
+          // at install time via the bash heredoc — we substitute __URL__ /
+          // __TOKEN__ / __BUN_PATH__ on the server, the rest by the install
+          // shell script via parameter expansion. Keep this responsive to the
+          // template fields above.
+          const plistRendered = plistTmpl
+            .replaceAll('__URL__', target)
+            .replaceAll('__TOKEN__', token)
+          const installScript = installTmpl
+            .replaceAll('__URL__', target)
+            .replaceAll('__TOKEN__', token)
+            .replace('__DAEMON_SOURCE__', daemonSrc.trimEnd())
+            .replace('__PLIST_BODY__', plistRendered.trimEnd())
+          return new Response(installScript, {
+            headers: {
+              'Content-Type': 'text/x-shellscript; charset=utf-8',
+              'Cache-Control': 'no-cache',
+            },
+          })
         },
       },
     },
