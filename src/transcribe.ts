@@ -4,10 +4,13 @@ import type { Usage } from './pricing'
 
 const openai = new OpenAI({ apiKey: config.openaiApiKey })
 
+// Note: don't list specific tech terms here. On silent audio Whisper / gpt-4o-transcribe
+// hallucinates plausible continuations of the prompt — listing "TypeScript, React, ..."
+// reliably produced fake transcripts like "Я работала с React на TypeScript".
 const LANGUAGE_PROMPT =
-  'Транскрипт устной речи. Основной язык — русский, иногда украинский, иногда английский. ' +
-  'В речи часто встречаются английские технические термины (API, deployment, refactor, TypeScript, React) — их нужно сохранять как есть, не транслитерировать и не переводить. ' +
-  'Розмова може переходити українською мовою. Sometimes the speaker switches to English entirely.'
+  'Транскрипт диктофонной записи на русском, украинском или английском. ' +
+  'Английские слова и термины сохраняй в оригинальном написании, не транслитерируй кириллицей. ' +
+  'Если в аудио ничего не сказано — верни пустую строку.'
 
 export interface TranscriptionResult {
   text: string

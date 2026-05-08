@@ -65,6 +65,12 @@ let analyser: AnalyserNode | null = null
 let analyserData: Uint8Array<ArrayBuffer> | null = null
 let rafId: number | null = null
 let smoothedLevel = 0
+let maxObservedLevel = 0
+let analyserAvailable = false
+
+// Below this smoothed level the recording is treated as silence and the upload
+// is skipped — Whisper/gpt-4o-transcribe hallucinates fake text on silent input.
+const SILENCE_THRESHOLD = 0.04
 
 let pendingResolve: ((b: Blob) => void) | null = null
 let pendingReject: ((e: unknown) => void) | null = null
@@ -340,6 +346,7 @@ function pulseLoop(t: number): void {
   const rms = Math.sqrt(sum / analyserData.length) / 128
   const target = Math.min(1, rms * 5)
   smoothedLevel += (target - smoothedLevel) * 0.16
+  if (smoothedLevel > maxObservedLevel) maxObservedLevel = smoothedLevel
   recBtn.style.setProperty('--voice-level', smoothedLevel.toFixed(3))
 
   const k = smoothedLevel * 18
@@ -449,9 +456,12 @@ async function startRecording(): Promise<void> {
     analyserData = new Uint8Array(new ArrayBuffer(analyser.fftSize))
     src.connect(analyser)
     smoothedLevel = 0
+    maxObservedLevel = 0
+    analyserAvailable = true
     rafId = requestAnimationFrame(pulseLoop)
   } catch {
     // pulsation is decorative — recording still works without it
+    analyserAvailable = false
   }
 
   isRecording = true
@@ -519,6 +529,22 @@ async function handleStop(): Promise<void> {
   const mime = mediaRecorder?.mimeType || 'audio/webm'
   const blob = new Blob(chunks, { type: mime })
   const recordedAt = new Date().toISOString()
+
+  // Silence guard: if the analyser was active and the loudest moment of the
+  // recording stayed below the threshold, skip the upload. Whisper hallucinates
+  // plausible-but-fake transcripts on silent input — and we'd pay for it too.
+  if (analyserAvailable && maxObservedLevel < SILENCE_THRESHOLD) {
+    setStatus('Тишина — записывать нечего', 'error')
+    pendingReject?.(new Error('silence'))
+    pendingResolve = null
+    pendingReject = null
+    recBtn.classList.remove('busy')
+    recLabel.textContent = 'Record'
+    recBtn.setAttribute('aria-label', 'Record')
+    recTime.textContent = '00:00'
+    return
+  }
+
   setStatus('Транскрибируем…')
 
   try {
