@@ -1,18 +1,20 @@
-import { createBot } from './bot'
+import { startServer } from './server'
 
-const bot = createBot()
+async function main() {
+  const server = await startServer()
+  const proto = server.url.protocol.replace(':', '')
+  console.log(`Server listening on ${proto}://localhost:${server.port}`)
 
-bot.catch((err) => {
-  console.error('Bot error:', err)
-})
-
-const shutdown = (signal: string) => {
-  console.log(`Received ${signal}, stopping bot...`)
-  void bot.stop().finally(() => process.exit(0))
+  const shutdown = (signal: string) => {
+    console.log(`Received ${signal}, stopping server…`)
+    server.stop()
+    process.exit(0)
+  }
+  process.once('SIGINT', () => shutdown('SIGINT'))
+  process.once('SIGTERM', () => shutdown('SIGTERM'))
 }
-process.once('SIGINT', () => shutdown('SIGINT'))
-process.once('SIGTERM', () => shutdown('SIGTERM'))
 
-bot.start({
-  onStart: () => console.log('Bot started'),
+main().catch((err) => {
+  console.error('Failed to start server:', err)
+  process.exit(1)
 })

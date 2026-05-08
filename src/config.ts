@@ -4,18 +4,10 @@ function requireEnv(name: string): string {
   return value
 }
 
-const allowedIds = requireEnv('ALLOWED_USER_IDS')
-  .split(',')
-  .map((s) => s.trim())
-  .filter(Boolean)
-  .map((s) => {
-    const n = Number(s)
-    if (!Number.isInteger(n)) throw new Error(`ALLOWED_USER_IDS contains non-integer: ${s}`)
-    return n
-  })
-
 export const config = {
-  telegramToken: requireEnv('TELEGRAM_BOT_TOKEN'),
   openaiApiKey: requireEnv('OPENAI_API_KEY'),
-  allowedUserIds: new Set<number>(allowedIds),
+  port: Number(process.env.PORT ?? 8443),
+  certPath: process.env.TLS_CERT_PATH ?? './certs/cert.pem',
+  keyPath: process.env.TLS_KEY_PATH ?? './certs/key.pem',
+  dataDir: process.env.DATA_DIR ?? './data',
 }

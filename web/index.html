@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="VoiceClip" />
+    <meta name="theme-color" content="#07070b" />
+    <title>VoiceClip</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <button id="history-btn" type="button" class="topbar-btn" aria-label="History">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M3 12a9 9 0 1 0 3-6.7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+          <polyline points="3 4 3 9 8 9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M12 7v5l3 2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+        </svg>
+        <span id="history-badge" class="topbar-badge" hidden>0</span>
+      </button>
+      <span id="total-pill" class="total-pill" title="Total spent">—</span>
+    </header>
+
+    <main>
+      <button id="rec" type="button" aria-label="Record">
+        <div class="rec-inner">
+          <svg class="mic-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" />
+            <path d="M19 11a7 7 0 0 1-14 0" />
+            <path d="M12 18v3" />
+          </svg>
+          <span id="rec-label">Record</span>
+        </div>
+        <span id="rec-time" aria-hidden="true">00:00</span>
+        <div class="busy-spinner" aria-hidden="true"></div>
+      </button>
+      <section id="result" hidden>
+        <textarea id="text" readonly></textarea>
+        <div class="result-footer">
+          <span id="cost-line" class="cost-line"></span>
+          <button id="copy" type="button">Copy</button>
+        </div>
+      </section>
+      <p id="status" role="status"></p>
+    </main>
+
+    <div id="history-modal" class="history-modal" hidden aria-hidden="true">
+      <div class="history-backdrop"></div>
+      <section class="history-sheet" role="dialog" aria-modal="true" aria-label="History">
+        <header class="history-head">
+          <button id="history-close" class="topbar-btn" type="button" aria-label="Close">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M6 6l12 12M18 6l-12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+            </svg>
+          </button>
+          <h2>История</h2>
+          <button id="mark-all-read" class="ghost-btn" type="button">Прочитать всё</button>
+        </header>
+        <div id="history-list" class="history-list"></div>
+        <p id="history-empty" class="history-empty" hidden>Пусто. Запиши первое сообщение.</p>
+      </section>
+    </div>
+
+    <script type="module" src="./app.ts"></script>
+  </body>
+</html>
