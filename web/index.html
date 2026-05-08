@@ -14,14 +14,13 @@
       // Last-resort offline guard: if the bundled app didn't initialize within 4s
       // (e.g. cache miss on hashed JS bundle after a server restart while the
       // device was offline), redirect to the offline page so we don't show a
-      // white screen.
-      window.addEventListener('load', () => {
-        setTimeout(() => {
-          if (!window.__voiceClipReady) {
-            location.replace('/offline')
-          }
-        }, 4000)
-      })
+      // white screen. Timer starts immediately — don't wait for `load`, which
+      // can stall up to 30s waiting for hung resource fetches to time out.
+      setTimeout(() => {
+        if (!window.__voiceClipReady) {
+          location.replace('/offline')
+        }
+      }, 4000)
     </script>
   </head>
   <body>

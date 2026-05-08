@@ -2,7 +2,7 @@
 // API requests (/upload, /cost, /history*) always go to network; offline queueing
 // is handled by the page via IndexedDB.
 
-const CACHE = 'voice-clip-v2'
+const CACHE = 'voice-clip-v3'
 const PRECACHE_URLS = ['/', '/offline']
 
 self.addEventListener('install', (event) => {
@@ -10,7 +10,7 @@ self.addEventListener('install', (event) => {
     (async () => {
       const cache = await caches.open(CACHE)
       // Precache best-effort: if any URL fails (first install while offline),
-      // it will populate on next online navigation.
+      // it will populate via postMessage from the page or runtime caching.
       await Promise.all(
         PRECACHE_URLS.map((url) => cache.add(url).catch(() => undefined)),
       )
@@ -25,6 +25,31 @@ self.addEventListener('activate', (event) => {
       const keys = await caches.keys()
       await Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)))
       await self.clients.claim()
+    })(),
+  )
+})
+
+// Page tells us about its bundled asset URLs (Bun's hashed paths) so we can
+// cache them — they were loaded before this SW activated and therefore
+// missed our normal fetch-handler caching.
+self.addEventListener('message', (event) => {
+  const data = event.data
+  if (!data || data.type !== 'precache' || !Array.isArray(data.assets)) return
+  event.waitUntil(
+    (async () => {
+      const cache = await caches.open(CACHE)
+      await Promise.all(
+        data.assets.map(async (url) => {
+          try {
+            const existing = await cache.match(url)
+            if (existing) return
+            const res = await fetch(url, { cache: 'no-store' })
+            if (res.ok) await cache.put(url, res.clone())
+          } catch {
+            /* ignore — runtime caching will pick it up */
+          }
+        }),
+      )
     })(),
   )
 })
@@ -53,7 +78,6 @@ self.addEventListener('fetch', (event) => {
       try {
         const fresh = await fetch(req)
         if (fresh && fresh.ok) {
-          // Stash a copy for offline use.
           cache.put(req, fresh.clone()).catch(() => undefined)
         }
         return fresh
@@ -61,7 +85,6 @@ self.addEventListener('fetch', (event) => {
         const cached = await cache.match(req)
         if (cached) return cached
 
-        // Last resort for navigations: serve the offline page.
         if (req.mode === 'navigate') {
           const offlinePage = await cache.match('/offline')
           if (offlinePage) return offlinePage

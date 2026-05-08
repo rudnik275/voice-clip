@@ -818,9 +818,38 @@ document.addEventListener('visibilitychange', () => {
 
 // === Service Worker registration ===
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/sw.js').catch((err) => {
-    console.warn('SW register failed:', err)
-  })
+  navigator.serviceWorker
+    .register('/sw.js')
+    .then(async () => {
+      try {
+        await navigator.serviceWorker.ready
+        // Tell the SW about Bun's hashed asset URLs we just loaded so it can
+        // cache them — they were fetched before the SW activated and therefore
+        // missed runtime caching.
+        const assets: string[] = []
+        document.querySelectorAll('script[src]').forEach((s) => {
+          const src = (s as HTMLScriptElement).src
+          if (src) assets.push(new URL(src, location.href).pathname)
+        })
+        document.querySelectorAll('link[rel="stylesheet"], link[rel="manifest"]').forEach((l) => {
+          const href = (l as HTMLLinkElement).href
+          if (href) assets.push(new URL(href, location.href).pathname)
+        })
+        const send = (): void => {
+          navigator.serviceWorker.controller?.postMessage({ type: 'precache', assets })
+        }
+        if (navigator.serviceWorker.controller) {
+          send()
+        } else {
+          navigator.serviceWorker.addEventListener('controllerchange', send, { once: true })
+        }
+      } catch {
+        // best effort — if precache messaging fails, runtime caching still works
+      }
+    })
+    .catch((err) => {
+      console.warn('SW register failed:', err)
+    })
 }
 
 // === Init ===
