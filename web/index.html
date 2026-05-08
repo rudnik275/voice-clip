@@ -37,6 +37,14 @@
         border: none; border-radius: 14px; cursor: pointer;
         box-shadow: 0 8px 24px rgba(115, 131, 255, 0.35);
       }
+      #boot-fallback .version { display: block; margin-top: 18px; font-size: 10px; color: rgba(255, 255, 255, 0.25); font-family: monospace; }
+      #version-tag {
+        position: fixed; right: 8px; z-index: 5;
+        bottom: max(env(safe-area-inset-bottom), 6px);
+        font-size: 9px; font-family: monospace;
+        color: rgba(255, 255, 255, 0.28);
+        user-select: none; pointer-events: none;
+      }
     </style>
     <link rel="stylesheet" href="./style.css" />
     <script>
@@ -82,8 +90,11 @@
         <h1>Mac не отвечает</h1>
         <p>Не получается загрузить приложение. Подключись к домашнему wifi и попробуй снова.</p>
         <button type="button" onclick="location.reload()">Попробовать снова</button>
+        <span class="version">v7</span>
       </div>
     </div>
+
+    <div id="version-tag">v7</div>
 
     <header class="topbar">
       <button id="history-btn" type="button" class="topbar-btn" aria-label="History">

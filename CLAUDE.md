@@ -224,3 +224,5 @@ PM2 process is named `voice-clip`. After server-side changes: `pm2 restart voice
 
 **Important — cache busting:** when you ship changes to `web/` assets (HTML, bundled JS/CSS, but NOT `sw.js` itself), the SW byte-content doesn't change and the browser won't trigger an update cycle. **Bump `CACHE` in `web/sw.js`** (e.g. `voice-clip-v3` → `voice-clip-v4`) so the SW changes byte-wise, the activate handler clears the previous cache, and clients reload to fetch fresh.
 
+**Version visibility:** the version string (`v7`, `v8`, …) is shown to the user in three places — bottom-right corner of the live UI (`#version-tag`), inside the `#boot-fallback` panel, and on `/offline`. There's also a plain-text `/version` endpoint. When bumping the SW cache, update **all four** spots: `web/sw.js` (`CACHE = 'voice-clip-vN'`), `web/index.html` (`#version-tag` and the `.version` span in `#boot-fallback`), `web/offline.html` (the `.version` span), and `src/server.ts` (the `/version` route response). A test in `tests/pwa-shell.test.ts` enforces that they all match.
+

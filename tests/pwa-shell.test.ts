@@ -14,6 +14,28 @@ describe('PWA shell — static guarantees', () => {
     expect(sw).toMatch(/const CACHE\s*=\s*['"]voice-clip-v\d+['"]/)
   })
 
+  test('version is consistent across sw.js, index.html, and offline.html', async () => {
+    // The version string must be visible to the user (so they can confirm
+    // an update reached the device) AND identical across all places where
+    // it's displayed. Forgetting one of them is a recurring pitfall — this
+    // test catches it.
+    const sw = await readWebFile('sw.js')
+    const indexHtml = await readWebFile('index.html')
+    const offlineHtml = await readWebFile('offline.html')
+
+    const swMatch = sw.match(/voice-clip-(v\d+)/)
+    expect(swMatch).toBeTruthy()
+    const version = swMatch![1]!
+
+    expect(indexHtml).toContain(version)
+    expect(offlineHtml).toContain(version)
+  })
+
+  test('index.html: visible #version-tag in the corner', async () => {
+    const html = await readWebFile('index.html')
+    expect(html).toMatch(/<div\s+id=["']version-tag["']/)
+  })
+
   test('sw.js: PRECACHE_URLS includes / and /offline', async () => {
     const sw = await readWebFile('sw.js')
     expect(sw).toMatch(/PRECACHE_URLS\s*=\s*\[/)

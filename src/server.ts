@@ -75,6 +75,10 @@ export async function startServer(deps: ServerDeps = {}) {
             'Cache-Control': 'no-cache',
           },
         }),
+      '/version': () =>
+        new Response('v7', {
+          headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-cache' },
+        }),
       '/cost': async () => Response.json(await costs.get()),
       '/history': {
         GET: async () => Response.json(await history.list()),
