@@ -2,8 +2,37 @@
 // API requests (/upload, /cost, /history*) always go to network; offline queueing
 // is handled by the page via IndexedDB.
 
-const CACHE = 'voice-clip-v4'
+const CACHE = 'voice-clip-v5'
 const PRECACHE_URLS = ['/', '/offline']
+
+// Last-resort HTML for navigations when both '/' and '/offline' missed cache —
+// e.g. the very first visit happened on a flaky network and cache.add() failed.
+// Self-contained: no external resources, just enough to give the user a button
+// to retry.
+const LAST_RESORT_HTML = `<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#07070b">
+    <title>VoiceClip — offline</title>
+    <style>
+      *{box-sizing:border-box}
+      html,body{margin:0;padding:0;height:100%}
+      body{background:#07070b;color:#f1f1f7;font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;display:grid;place-items:center;min-height:100dvh;padding:20px;text-align:center}
+      h1{font-size:22px;font-weight:600;margin:0 0 12px;letter-spacing:-0.01em}
+      p{font-size:14px;line-height:1.5;color:#8b8b9c;margin:0 0 24px;max-width:320px}
+      button{font-size:15px;font-weight:600;font-family:inherit;padding:14px 26px;color:white;background:linear-gradient(135deg,#7383ff,#b15eff);border:none;border-radius:14px;cursor:pointer;box-shadow:0 8px 24px rgba(115,131,255,0.35)}
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>OFFLINE</h1>
+      <p>Mac не отвечает и кэш PWA пуст. Подключись к домашнему wifi и попробуй ещё раз.</p>
+      <button onclick="location.replace('/')">Попробовать снова</button>
+    </main>
+  </body>
+</html>`
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -90,6 +119,10 @@ self.addEventListener('fetch', (event) => {
           if (offlinePage) return offlinePage
           const root = await cache.match('/')
           if (root) return root
+          // Final fallback: inline HTML so the user always sees SOMETHING usable.
+          return new Response(LAST_RESORT_HTML, {
+            headers: { 'Content-Type': 'text/html; charset=utf-8' },
+          })
         }
         return new Response('offline', { status: 503, statusText: 'offline' })
       }

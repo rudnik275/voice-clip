@@ -11,16 +11,35 @@
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="stylesheet" href="./style.css" />
     <script>
-      // Last-resort offline guard: if the bundled app didn't initialize within 4s
-      // (e.g. cache miss on hashed JS bundle after a server restart while the
-      // device was offline), redirect to the offline page so we don't show a
-      // white screen. Timer starts immediately — don't wait for `load`, which
-      // can stall up to 30s waiting for hung resource fetches to time out.
-      setTimeout(() => {
-        if (!window.__voiceClipReady) {
+      // Offline guard: if the bundled app shell can't load (offline + cache miss
+      // on the hashed Bun bundle URLs), bounce to /offline.html instead of
+      // showing a white screen. Two triggers:
+      //   1. Any <script> or stylesheet <link> failing to load → redirect now.
+      //   2. After 4s if window.__voiceClipReady is still false → redirect.
+      (function () {
+        var redirected = false
+        function goOffline() {
+          if (redirected) return
+          redirected = true
           location.replace('/offline')
         }
-      }, 4000)
+        window.addEventListener(
+          'error',
+          function (e) {
+            var t = e && e.target
+            if (!t || !t.tagName) return
+            var tag = t.tagName
+            var rel = t.getAttribute && t.getAttribute('rel')
+            if (tag === 'SCRIPT' || (tag === 'LINK' && rel === 'stylesheet')) {
+              goOffline()
+            }
+          },
+          true,
+        )
+        setTimeout(function () {
+          if (!window.__voiceClipReady) goOffline()
+        }, 4000)
+      })()
     </script>
   </head>
   <body>
