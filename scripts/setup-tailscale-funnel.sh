@@ -26,7 +26,7 @@ KEY="$HOME/.ssh/voice-clip-nas"
 [ -f "$KEY" ] || { echo "ERROR: ssh-key $KEY missing — run setup-ssh-key.sh first." >&2; exit 2; }
 
 REMOTE() {
-  ssh -i "$KEY" -o StrictHostKeyChecking=accept-new "${NAS_USER}@${NAS_HOST}" "$@"
+  ssh -i "$KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new "${NAS_USER}@${NAS_HOST}" "$@"
 }
 
 # Synology installs Tailscale in /var/packages/Tailscale. The CLI is symlinked

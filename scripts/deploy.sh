@@ -22,15 +22,26 @@ set -a; source .env; set +a
 KEY="$HOME/.ssh/voice-clip-nas"
 [ -f "$KEY" ] || { echo "ERROR: ssh-key $KEY missing — run setup-ssh-key.sh first." >&2; exit 2; }
 
-SSH_OPTS=(-i "$KEY" -o StrictHostKeyChecking=accept-new)
+# BatchMode=yes makes ssh fail-fast if it would prompt for a password. On
+# Synology DSM sshd, without this flag, ssh attempts password fallback after
+# publickey succeeds and rsync hangs with "Permission denied, please try
+# again". IdentitiesOnly=yes pins the deploy key (don't try ssh-agent).
+SSH_OPTS=(-i "$KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new)
 
-echo "[1/4] Ensuring remote dir exists…"
-ssh "${SSH_OPTS[@]}" "${NAS_USER}@${NAS_HOST}" "mkdir -p ${REMOTE_DIR}"
+echo "[1/4] Ensuring remote dir + data volume exist…"
+# `data/` is excluded from rsync (state is per-deployment), so it must be
+# pre-created — docker compose with a bind-mount fails if the host path is
+# missing.
+ssh "${SSH_OPTS[@]}" "${NAS_USER}@${NAS_HOST}" "mkdir -p ${REMOTE_DIR}/data"
 
 echo "[2/4] rsync sources → NAS…"
 # --delete: stale files removed; -e: pin ssh-key + opts; excludes line up with
 # .dockerignore + don't ship secrets/data/build artefacts.
+# --rsync-path: Synology's non-interactive ssh PATH doesn't include /usr/bin,
+# and a missing remote rsync surfaces as a misleading "Permission denied,
+# please try again". Pin the absolute path.
 rsync -avz --delete \
+  --rsync-path=/usr/bin/rsync \
   -e "ssh ${SSH_OPTS[*]}" \
   --exclude='.git' \
   --exclude='node_modules' \
@@ -46,15 +57,20 @@ rsync -avz --delete \
   ./ "${NAS_USER}@${NAS_HOST}:${REMOTE_DIR}/"
 
 echo "[3/4] scp .env → NAS:${REMOTE_DIR}/.env (chmod 600)…"
-# scp the raw .env file. AI is blocked from reading .env contents (global
-# CLAUDE.md rule), and scp transmits bytes inside the encrypted SSH channel
-# without echoing them.
-scp "${SSH_OPTS[@]}" .env "${NAS_USER}@${NAS_HOST}:${REMOTE_DIR}/.env"
+# scp transmits bytes inside the encrypted SSH channel without echoing them.
+# AI is also blocked from reading .env contents (global CLAUDE.md rule).
+# `-O` forces the legacy SCP protocol — Synology's sshd ships with the SFTP
+# subsystem disabled (modern scp >= 9.0 uses SFTP by default and dies with
+# "subsystem request failed on channel 0").
+scp -O "${SSH_OPTS[@]}" .env "${NAS_USER}@${NAS_HOST}:${REMOTE_DIR}/.env"
 ssh "${SSH_OPTS[@]}" "${NAS_USER}@${NAS_HOST}" "chmod 600 ${REMOTE_DIR}/.env"
 
 echo "[4/4] docker compose up -d --build on NAS…"
-# Synology DSM ships docker-compose v1 sometimes; prefer `docker compose` (v2).
-ssh "${SSH_OPTS[@]}" "${NAS_USER}@${NAS_HOST}" "cd ${REMOTE_DIR} && sudo docker compose up -d --build"
+# Full path to docker: Synology's /usr/local/bin isn't in non-interactive ssh
+# PATH (and the sudoers.d entry written by setup-nas-docker.sh whitelists this
+# exact path).
+DOCKER=/usr/local/bin/docker
+ssh "${SSH_OPTS[@]}" "${NAS_USER}@${NAS_HOST}" "cd ${REMOTE_DIR} && sudo -n ${DOCKER} compose up -d --build"
 
 echo
 echo "Smoke: GET /version (via NAS loopback)…"
