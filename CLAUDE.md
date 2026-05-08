@@ -109,57 +109,108 @@ For more information, read the Bun API docs in `node_modules/bun-types/docs/**.m
 
 # Project: voice-clip
 
-Self-hosted PWA on macOS that turns voice recordings into clipboard text. Phone records → Mac transcribes via OpenAI `gpt-4o-transcribe` → text lands in both clipboards. Originally a Telegram bot; that path is gone.
+Multi-user PWA-server that turns voice recordings into clipboard text. Phones record → server transcribes via OpenAI `gpt-4o-transcribe` → text lands in the user's per-Mac clipboard via an opt-in daemon. Originally a single-user Mac-local Telegram bot; both paths are gone.
+
+Two deployment modes:
+- **Local Mac dev** (mkcert + pm2 + `https://Mac-mini-Rudnik.local:8443`) — for hacking on the code.
+- **Synology NAS via Tailscale Funnel + Docker** — production, public HTTPS, multi-user.
 
 ## File map
 
 ```
 src/
-  config.ts          env config; required: OPENAI_API_KEY; optional: PORT, TLS_*, DATA_DIR
-  index.ts           entry: starts server, handles SIGINT/SIGTERM
-  server.ts          Bun.serve with TLS; wires stores; routes /, /sw.js, /cost, /history*, /upload
-  storage.ts         createAudioStorage(dataDir) → saveAudio + daily cleanup of data/recordings/
-  history-store.ts   createHistoryStore(dataDir) → CRUD on data/history.json
-  cost-store.ts      createCostStore(dataDir) → cumulative spend in data/cost.json
-  pricing.ts         calcCostUsd(usage) per OpenAI gpt-4o-transcribe rates
-  transcribe.ts      wraps OpenAI audio.transcriptions.create with multi-lang prompt
-  macos.ts           pbcopy via Bun.spawn
+  config.ts                 env config; required: OPENAI_API_KEY; optional: PORT, TLS_*, DATA_DIR,
+                            USE_TLS, ADMIN_TOKEN, PUBLIC_URL
+  index.ts                  entry: starts server, handles SIGINT/SIGTERM
+  server.ts                 Bun.serve; routes (auth, signup, history, upload, /events SSE,
+                            /install/voice-clip-daemon); per-user store cache
+  storage.ts                createAudioStorage(dataDir) → saveAudio + daily cleanup of data/recordings/
+                            (still GLOBAL — debug-only audio dump, not user-isolated)
+  history-store.ts          createHistoryStore(dataDir) — JSON + write-mutex; server passes
+                            data/users/<userId>/ to scope per user
+  cost-store.ts             createCostStore(dataDir) — same pattern. TWO instances per request:
+                            per-user (data/users/<userId>/cost.json) and aggregate (data/cost.json).
+                            Aggregate is what the UI total-pill shows.
+  users-store.ts            createUsersStore(dataDir) → data/users.json
+  invites-store.ts          createInvitesStore(dataDir) → data/invites.json (single-use atomic consume)
+  sessions-store.ts         createSessionsStore(dataDir) → data/sessions.json (HttpOnly cookie tokens)
+  pending-clips-store.ts    per-user; data/users/<id>/pending-clips.json — clips queued for daemon
+                            replay when it reconnects, ack'd via /events/ack
+  live-bus.ts               in-memory pub/sub for SSE delivery to currently-connected daemons
+  auth.ts                   parseSessionCookie, setSessionCookieHeader, resolveSession,
+                            unauthorized/forbidden helpers
+  pricing.ts                calcCostUsd(usage) per OpenAI gpt-4o-transcribe rates
+  transcribe.ts             wraps OpenAI audio.transcriptions.create with multi-lang prompt
+  macos.ts                  pbcopy via Bun.spawn — used in legacy local-Mac path; in NAS deploy
+                            this is a no-op since the container has no pbcopy
 
 web/
-  index.html         PWA entry; topbar (history btn + total pill), main (record button, result), modal
-  app.ts             recording, IndexedDB queue, drain, history rendering, SW registration
-  style.css          design tokens + components
-  sw.js              service worker — cache-first for shell, passthrough for API
-  tsconfig.json      adds DOM lib (separate from server's tsconfig)
+  index.html                PWA entry; topbar (history btn + total pill + user pill), main
+                            (record button, result), history modal, user menu modal
+  app.ts                    /me check on load (401 → /signup-needed redirect), recording, IndexedDB
+                            queue, drain, history rendering, SW registration, user menu
+                            (Logout, "Подключить Mac" copies the daemon-install curl command)
+  signup.html               self-contained form for /signup/:invite
+  signup-needed.html        self-contained "you need an invite link" page
+  style.css                 design tokens + components (Liquid Glass)
+  sw.js                     service worker — cache-first for shell, passthrough for API
+  tsconfig.json             adds DOM lib (separate from server's tsconfig)
 
-scripts/setup-cert.sh  one-time mkcert helper
+daemon/
+  index.ts                  Bun runtime that holds /events SSE → pbcopy → /events/ack loop
+  install.sh.tmpl           bash installer template (server inlines URL/TOKEN, embeds source)
+  com.voiceclip.daemon.plist.tmpl   launchd plist template
 
-certs/   gitignored: cert.pem, key.pem, rootCA.pem (publish rootCA.pem to other devices)
-data/    gitignored: recordings/ (auto-cleaned), history.json, cost.json, .last-cleanup
+scripts/
+  setup-cert.sh             one-time mkcert helper (local dev only)
+  with-secrets.sh           AI-safe `op run` wrapper (copy of slots/scripts/with-secrets.sh)
+  setup-ssh-key.sh          one-time: ssh-keygen + sshpass ssh-copy-id (via with-secrets.sh)
+  setup-tailscale-funnel.sh ssh into NAS, configure tailscale serve+funnel, print public URL
+  deploy.sh                 rsync + scp .env + docker compose up -d on NAS
 
-tests/   bun test suite — pricing, history-store, cost-store, storage cleanup
+Dockerfile                  multi-stage Bun image (alpine), HEALTHCHECK against /version
+docker-compose.yml          single `voice-clip` service, 127.0.0.1:8080 loopback, ./data:/data
+
+certs/   gitignored: cert.pem, key.pem, rootCA.pem (local dev only)
+data/    gitignored: per-user history/cost/recordings/pending-clips, plus root-level
+         users.json, invites.json, sessions.json, cost.json (aggregate)
+
+tests/   bun test suite — pricing, all stores, storage cleanup, auth, daemon-delivery, upload-flow
 ```
 
-## Storage and lifecycle
+## Storage and lifecycle (per-user)
 
-| Path                    | Lifetime                                              | Role                                                              |
-| ----------------------- | ----------------------------------------------------- | ----------------------------------------------------------------- |
-| `data/recordings/*.m4a` | Lazy daily purge of non-today files on first /upload  | Debug-only audio dump. **Don't reference from app logic.**        |
-| `data/history.json`     | **Forever**                                           | Source of truth: every transcription with id/text/cost/source/readAt |
-| `data/cost.json`        | **Forever** (survives history.clear)                  | Cumulative spend (totalUsd / totalRequests / since)               |
-| `data/.last-cleanup`    | Until next day                                        | One line: YYYY-MM-DD of last recordings cleanup                   |
+| Path                                          | Lifetime                                              | Role                                                              |
+| --------------------------------------------- | ----------------------------------------------------- | ----------------------------------------------------------------- |
+| `data/recordings/*.m4a`                       | Lazy daily purge of non-today files on first /upload  | GLOBAL debug-only audio dump. Not user-isolated. **Don't reference from app logic.** |
+| `data/users.json`                             | **Forever**                                           | Array of `{id, name, createdAt, daemonToken}` |
+| `data/invites.json`                           | **Forever**                                           | Single-use invite tokens (consumed atomically) |
+| `data/sessions.json`                          | **Forever** (no idle expiry; explicit /logout deletes) | Cookie tokens → userId |
+| `data/users/<userId>/history.json`            | **Forever**                                           | Per-user transcription log (canonical) |
+| `data/users/<userId>/cost.json`               | **Forever**                                           | Per-user cumulative spend |
+| `data/users/<userId>/pending-clips.json`      | Until ack'd by daemon                                 | Server-side queue of clips not yet pbcopy'd |
+| `data/cost.json`                              | **Forever** (survives history.clear)                  | AGGREGATE spend across ALL users — what the UI total-pill shows |
+| `data/.last-cleanup`                          | Until next day                                        | YYYY-MM-DD of last recordings cleanup                   |
 
-History.json + cost.json are canonical. Audio is debug-only.
+`history.json` + per-user `cost.json` + aggregate `cost.json` are canonical. Audio is debug-only.
 
-## Stores: factory pattern
+## Stores: factory pattern (unchanged)
 
-All three stores — `createHistoryStore(dataDir)`, `createCostStore(dataDir)`, `createAudioStorage(dataDir)` — take dataDir as a parameter. **Don't read `config.dataDir` directly inside stores or storage code.** Server wires `config.dataDir` at startup; tests pass a temp dir. This is the testability contract — keep it.
+`createHistoryStore(dataDir)`, `createCostStore(dataDir)`, `createAudioStorage(dataDir)`, `createUsersStore(dataDir)`, `createInvitesStore(dataDir)`, `createSessionsStore(dataDir)`, `createPendingClipsStore(dataDir, userId)` — all take a dataDir parameter. **Don't read `config.dataDir` directly inside stores or storage code.** Server wires `config.dataDir` at startup; tests pass a temp dir.
 
-History- and cost-store both serialize their write paths through a single Promise-chain mutex so concurrent uploads from multiple devices (e.g. phone + tablet draining offline queues at the same time) can't lose items via load → mutate → save races.
+For per-user history/cost stores, server.ts passes `path.join(dataDir, 'users', userId)` as the dataDir — the store doesn't know it's user-scoped. **Important:** server.ts caches per-user store instances in a `Map<userId, Store>` so the write-mutex Promise chain inside each store is shared across requests for the same user; without the cache, concurrent uploads would race.
+
+All write-mutating store ops are serialized through a single Promise-chain mutex.
+
+## Auth model
+
+- Invite-link signup. Owner generates one-time token via `POST /admin/invites` (gated by `X-Admin-Token` header == `ADMIN_TOKEN` env). Invitee opens `https://<server>/signup/<token>`, enters name, gets a session cookie, redirected to `/`.
+- Session = HttpOnly cookie (`session=<32-hex>`), Secure flag matches `useTls`, no idle expiry. `POST /logout` deletes the row in `sessions.json`.
+- All API routes (`/upload`, `/history*`, `/cost`, `/me`) require a session via `resolveSession()`. Daemon-only routes (`/events`, `/events/ack`, `/install/voice-clip-daemon`) auth via the user's `daemonToken` (URL or `X-Daemon-Token` header).
 
 ## Server: dependency injection
 
-`startServer(deps)` accepts an optional `ServerDeps` object: `history`, `costs`, `audio`, `transcribe`, `copyToClipboard`, `port`, `certPath`, `keyPath`, `useTls`. Production (`src/index.ts`) calls it with no args — sensible defaults wire real stores, real OpenAI, real `pbcopy`. Tests pass mocks: stub `transcribe` returning canned `{text, usage}`, stub `copyToClipboard` capturing calls, real stores backed by a temp dir. Use `useTls: false` and `port: 0` for in-process integration tests on an ephemeral HTTP port.
+`startServer(deps)` accepts an optional `ServerDeps` object: `dataDir`, `users`, `invites`, `sessions`, `audio`, `aggregateCosts`, `liveBus`, `transcribe`, `copyToClipboard`, `port`, `certPath`, `keyPath`, `useTls`, `adminToken`, `publicUrl`. Production (`src/index.ts`) calls it with no args. Tests pass `dataDir: tempDir` plus optional store instances + stub `transcribe` / `copyToClipboard`. Use `useTls: false` and `port: 0` for in-process integration tests on an ephemeral HTTP port.
 
 ## Offline protocol
 
@@ -218,11 +269,33 @@ Typography: SF Pro Display / system stack, letter-spacing `-0.01em` for body, `0
 
 ## Deployment / lifecycle
 
-PM2 process is named `voice-clip`. After server-side changes: `pm2 restart voice-clip`.
+**Production (Synology NAS):** server runs as a Docker container managed by `docker compose`. Public HTTPS via Tailscale Funnel. After code changes:
+
+```sh
+./scripts/deploy.sh
+```
+
+That rsyncs sources to the NAS, scp's the local `.env` (gitignored, AI-blocked), and runs `docker compose up -d --build`. Health-checks `/version` at the end.
+
+`scripts/setup-ssh-key.sh` (one-time, via `./scripts/with-secrets.sh`) registers an ssh-key so deploys don't need the NAS password. After that the password can be rotated freely. `scripts/setup-tailscale-funnel.sh` is the other one-time setup that turns on the public Funnel and prints the `*.ts.net` URL — paste that into `.env` as `PUBLIC_URL`.
+
+**Local dev (Mac):** `bun run dev` (TLS via mkcert) or `pm2 restart voice-clip` if you keep PM2 running. The Mac-local pbcopy path still works for the dev user, but the multi-user delivery story is the per-user `daemon/` SSE-stream — install on each user's Mac via the curl one-liner in the user-pill menu.
 
 **PWA update propagation:** the page periodically calls `registration.update()` (every 30 min, plus on `online` and `visibilitychange`). When a new SW takes control (`controllerchange` fires after the first install), the page auto-reloads — so the tablet picks up new builds without manual close+reopen.
 
 **Important — cache busting:** when you ship changes to `web/` assets (HTML, bundled JS/CSS, but NOT `sw.js` itself), the SW byte-content doesn't change and the browser won't trigger an update cycle. **Bump `CACHE` in `web/sw.js`** (e.g. `voice-clip-v3` → `voice-clip-v4`) so the SW changes byte-wise, the activate handler clears the previous cache, and clients reload to fetch fresh.
 
-**Version visibility:** the version string (`v7`, `v8`, …) is shown to the user in three places — bottom-right corner of the live UI (`#version-tag`), inside the `#boot-fallback` panel, and on `/offline`. There's also a plain-text `/version` endpoint. When bumping the SW cache, update **all four** spots: `web/sw.js` (`CACHE = 'voice-clip-vN'`), `web/index.html` (`#version-tag` and the `.version` span in `#boot-fallback`), `web/offline.html` (the `.version` span), and `src/server.ts` (the `/version` route response). A test in `tests/pwa-shell.test.ts` enforces that they all match.
+**Version visibility:** the version string (`v7`, `v8`, …) is shown to the user in three places — bottom-right corner of the live UI (`#version-tag`), inside the `#boot-fallback` panel, and on `/offline`. There's also a plain-text `/version` endpoint. When bumping the SW cache, update **all four** spots: `web/sw.js` (`CACHE = 'voice-clip-vN'`), `web/index.html` (`#version-tag` and the `.version` span in `#boot-fallback`), `web/offline.html` (the `.version` span), and `src/server.ts` (the `APP_VERSION` constant). A test in `tests/pwa-shell.test.ts` enforces that they all match.
+
+## Secrets
+
+**App secrets** (`OPENAI_API_KEY`, `ADMIN_TOKEN`) live in plain `.env` (gitignored, AI-blocked by the global `Read .env*` rule). User fills `.env` by hand from `.env.example`.
+
+**NAS connection** is the only thing that flows through 1Password — `op://Personal/<NAS-uuid>/{username,password}` references in `.env.1password`, resolved at run-time by `./scripts/with-secrets.sh` (a `op run` wrapper that masks values in stdout/stderr). NAS password is used **once** during `setup-ssh-key.sh`; afterwards everything is ssh-key-based.
+
+**AI rules:**
+- Never `op read`, `op item get`, `op inject`, or any command that prints secret values to stdout.
+- Never `cat .env` / `Read .env`.
+- Always go through `./scripts/with-secrets.sh ./scripts/<X>.sh` for anything that needs `NAS_PASSWORD`.
+- For 1Password items with special chars in the title (parens/spaces), use the item's UUID in the `op://` reference instead of the title — the URI syntax doesn't allow them.
 
