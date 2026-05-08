@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="theme-color" content="#07070b" />
+    <title>VoiceClip — регистрация</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; height: 100%; }
+      body {
+        background: #07070b;
+        color: #f1f1f7;
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        display: grid;
+        place-items: center;
+        min-height: 100dvh;
+        padding: 20px;
+      }
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        z-index: -1;
+        background:
+          radial-gradient(ellipse 60% 50% at 30% 20%, rgba(115, 131, 255, 0.15), transparent 60%),
+          radial-gradient(ellipse 60% 50% at 80% 90%, rgba(177, 94, 255, 0.12), transparent 60%);
+      }
+      main {
+        max-width: 380px;
+        width: 100%;
+        text-align: center;
+      }
+      .badge {
+        display: inline-block;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.18em;
+        background: rgba(115, 131, 255, 0.18);
+        color: #a8b2ff;
+        border: 1px solid rgba(115, 131, 255, 0.3);
+        padding: 5px 12px;
+        border-radius: 999px;
+        margin-bottom: 20px;
+      }
+      h1 { font-size: 22px; font-weight: 600; margin: 0 0 8px; letter-spacing: -0.01em; }
+      p { font-size: 14px; line-height: 1.5; color: #8b8b9c; margin: 0 0 24px; }
+      form { display: grid; gap: 14px; }
+      input[type="text"] {
+        font-size: 16px;
+        font-family: inherit;
+        padding: 14px 18px;
+        color: #f1f1f7;
+        background: rgba(255, 255, 255, 0.045);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 14px;
+        outline: none;
+        text-align: center;
+        backdrop-filter: blur(20px) saturate(180%);
+      }
+      input[type="text"]:focus { border-color: rgba(115, 131, 255, 0.5); }
+      button {
+        font-size: 15px;
+        font-weight: 600;
+        font-family: inherit;
+        padding: 14px 26px;
+        color: white;
+        background: linear-gradient(135deg, #7383ff, #b15eff);
+        border: none;
+        border-radius: 14px;
+        cursor: pointer;
+        box-shadow: 0 8px 24px rgba(115, 131, 255, 0.35);
+        letter-spacing: 0.01em;
+        -webkit-tap-highlight-color: transparent;
+      }
+      button:active { transform: scale(0.98); }
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
+      .error { color: #ff8a93; font-size: 13px; min-height: 18px; }
+      .version { display: block; margin-top: 24px; font-size: 10px; color: rgba(255, 255, 255, 0.25); font-family: monospace; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <span class="badge">INVITE</span>
+      <h1>Тебя пригласили</h1>
+      <p>Как тебя зовут? Имя видно только тебе и владельцу сервиса.</p>
+      <form id="form" autocomplete="off">
+        <input id="name" type="text" name="name" placeholder="Имя" maxlength="40" required autofocus />
+        <button type="submit" id="submit">Войти</button>
+        <div class="error" id="error"></div>
+      </form>
+      <span class="version">v8</span>
+    </main>
+    <script>
+      (function () {
+        var form = document.getElementById('form')
+        var nameEl = document.getElementById('name')
+        var btn = document.getElementById('submit')
+        var err = document.getElementById('error')
+
+        form.addEventListener('submit', function (e) {
+          e.preventDefault()
+          err.textContent = ''
+          btn.disabled = true
+          var name = nameEl.value.trim()
+          if (!name) {
+            err.textContent = 'Введи имя'
+            btn.disabled = false
+            return
+          }
+          // Token is the last segment of the path: /signup/<token>
+          var token = location.pathname.split('/').pop()
+          fetch(location.pathname, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: name }),
+          })
+            .then(function (r) {
+              if (r.ok) {
+                location.replace('/')
+                return null
+              }
+              return r.json().catch(function () { return { error: 'Ошибка' } })
+            })
+            .then(function (data) {
+              if (data && data.error) err.textContent = data.error
+              btn.disabled = false
+            })
+            .catch(function () {
+              err.textContent = 'Не получилось связаться с сервером'
+              btn.disabled = false
+            })
+        })
+      })()
+    </script>
+  </body>
+</html>

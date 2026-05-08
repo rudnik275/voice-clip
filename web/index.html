@@ -90,11 +90,11 @@
         <h1>Mac не отвечает</h1>
         <p>Не получается загрузить приложение. Подключись к домашнему wifi и попробуй снова.</p>
         <button type="button" onclick="location.reload()">Попробовать снова</button>
-        <span class="version">v7</span>
+        <span class="version">v8</span>
       </div>
     </div>
 
-    <div id="version-tag">v7</div>
+    <div id="version-tag">v8</div>
 
     <header class="topbar">
       <button id="history-btn" type="button" class="topbar-btn" aria-label="History">
@@ -108,8 +108,21 @@
       <div class="topbar-right">
         <span id="offline-pill" class="offline-pill" hidden>OFFLINE</span>
         <span id="total-pill" class="total-pill" title="Total spent">—</span>
+        <button id="user-pill" class="user-pill" type="button" hidden aria-label="Account menu">
+          <span id="user-name">…</span>
+        </button>
       </div>
     </header>
+
+    <div id="user-menu" class="user-menu" hidden role="dialog" aria-hidden="true" aria-label="Account">
+      <div class="user-menu-backdrop"></div>
+      <div class="user-menu-sheet">
+        <p id="user-menu-name" class="user-menu-name"></p>
+        <button id="install-daemon-btn" type="button" class="ghost-btn">📎 Подключить Mac</button>
+        <button id="logout-btn" type="button" class="ghost-btn danger">Выйти</button>
+        <button id="user-menu-close" type="button" class="ghost-btn">Закрыть</button>
+      </div>
+    </div>
 
     <main>
       <button id="rec" type="button" aria-label="Record">

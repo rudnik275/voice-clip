@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <meta name="theme-color" content="#07070b" />
+    <title>VoiceClip — нужно приглашение</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; height: 100%; }
+      body {
+        background: #07070b;
+        color: #f1f1f7;
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        display: grid;
+        place-items: center;
+        min-height: 100dvh;
+        padding: 20px;
+        text-align: center;
+      }
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        z-index: -1;
+        background:
+          radial-gradient(ellipse 60% 50% at 30% 20%, rgba(115, 131, 255, 0.15), transparent 60%),
+          radial-gradient(ellipse 60% 50% at 80% 90%, rgba(177, 94, 255, 0.12), transparent 60%);
+      }
+      main { max-width: 360px; }
+      .badge {
+        display: inline-block;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.18em;
+        background: rgba(115, 131, 255, 0.18);
+        color: #a8b2ff;
+        border: 1px solid rgba(115, 131, 255, 0.3);
+        padding: 5px 12px;
+        border-radius: 999px;
+        margin-bottom: 20px;
+      }
+      h1 { font-size: 22px; font-weight: 600; margin: 0 0 12px; letter-spacing: -0.01em; }
+      p { font-size: 14px; line-height: 1.5; color: #8b8b9c; margin: 0 0 12px; }
+      .version { display: block; margin-top: 18px; font-size: 10px; color: rgba(255, 255, 255, 0.25); font-family: monospace; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <span class="badge">ACCESS</span>
+      <h1>Нужна ссылка-приглашение</h1>
+      <p>Это закрытый сервис. Попроси у владельца одноразовую ссылку вида <code>/signup/&lt;token&gt;</code>.</p>
+      <span class="version">v8</span>
+    </main>
+  </body>
+</html>

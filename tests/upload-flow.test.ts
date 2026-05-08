@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createHistoryStore, type HistoryItem } from '../src/history-store'
-import { createCostStore } from '../src/cost-store'
-import { createAudioStorage } from '../src/storage'
+import type { HistoryItem } from '../src/history-store'
+import { createUsersStore, type User } from '../src/users-store'
+import { createSessionsStore, type Session } from '../src/sessions-store'
+import { createInvitesStore } from '../src/invites-store'
 import { startServer, type ServerDeps } from '../src/server'
 
 interface UploadResponse {
@@ -16,19 +17,31 @@ interface UploadResponse {
   source: 'online' | 'offline'
 }
 
-describe('upload flow + history sync', () => {
+describe('upload flow + history sync (single user)', () => {
   let dir: string
   let server: Awaited<ReturnType<typeof startServer>>
   let baseUrl: string
   let clipboardCalls: string[]
+  let user: User
+  let session: Session
+  let cookie: string
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), 'voice-clip-server-'))
     clipboardCalls = []
+
+    const users = createUsersStore(dir)
+    const sessions = createSessionsStore(dir)
+    const invites = createInvitesStore(dir)
+    user = await users.create({ name: 'test' })
+    session = await sessions.create(user.id)
+    cookie = `session=${session.token}`
+
     const deps: ServerDeps = {
-      history: createHistoryStore(dir),
-      costs: createCostStore(dir),
-      audio: createAudioStorage(dir),
+      dataDir: dir,
+      users,
+      sessions,
+      invites,
       transcribe: async () => ({
         text: 'mocked transcript',
         usage: { audioTokens: 100, textTokens: 50, outputTokens: 20 },
@@ -64,16 +77,26 @@ describe('upload flow + history sync', () => {
     return fd
   }
 
+  async function upload(opts: {
+    bytes?: number[]
+    mime?: string
+    source: 'online' | 'offline'
+    recordedAt: string
+  }): Promise<Response> {
+    return fetch(`${baseUrl}/upload`, {
+      method: 'POST',
+      headers: { cookie },
+      body: makeFormData(opts),
+    })
+  }
+
   async function listHistory(): Promise<HistoryItem[]> {
-    const r = await fetch(`${baseUrl}/history`)
+    const r = await fetch(`${baseUrl}/history`, { headers: { cookie } })
     return (await r.json()) as HistoryItem[]
   }
 
   test('online upload → clipboard called, item saved with readAt (auto-read)', async () => {
-    const r = await fetch(`${baseUrl}/upload`, {
-      method: 'POST',
-      body: makeFormData({ source: 'online', recordedAt: '2026-05-08T10:00:00Z' }),
-    })
+    const r = await upload({ source: 'online', recordedAt: '2026-05-08T10:00:00Z' })
     expect(r.ok).toBe(true)
 
     const data = (await r.json()) as UploadResponse
@@ -87,13 +110,15 @@ describe('upload flow + history sync', () => {
     expect(items[0]?.source).toBe('online')
     expect(items[0]?.readAt).toBeString()
     expect(items[0]?.recordedAt).toBe('2026-05-08T10:00:00Z')
+
+    // Per-user history file lives under data/users/<userId>/history.json
+    const raw = await readFile(join(dir, 'users', user.id, 'history.json'), 'utf8')
+    const items2 = JSON.parse(raw) as HistoryItem[]
+    expect(items2).toHaveLength(1)
   })
 
   test('offline upload → clipboard NOT called, item without readAt (stays unread)', async () => {
-    const r = await fetch(`${baseUrl}/upload`, {
-      method: 'POST',
-      body: makeFormData({ source: 'offline', recordedAt: '2026-05-08T08:30:00Z' }),
-    })
+    const r = await upload({ source: 'offline', recordedAt: '2026-05-08T08:30:00Z' })
     expect(r.ok).toBe(true)
 
     expect(clipboardCalls).toHaveLength(0)
@@ -106,18 +131,14 @@ describe('upload flow + history sync', () => {
   })
 
   test('multi-device drain: parallel offline uploads from two devices all land in history', async () => {
-    // Phone + tablet draining their offline queues at the same time.
     const N = 6
     const promises: Promise<Response>[] = []
     for (let i = 0; i < N; i++) {
       promises.push(
-        fetch(`${baseUrl}/upload`, {
-          method: 'POST',
-          body: makeFormData({
-            bytes: [i],
-            source: 'offline',
-            recordedAt: `2026-05-08T08:${String(i).padStart(2, '0')}:00Z`,
-          }),
+        upload({
+          bytes: [i],
+          source: 'offline',
+          recordedAt: `2026-05-08T08:${String(i).padStart(2, '0')}:00Z`,
         }),
       )
     }
@@ -126,26 +147,15 @@ describe('upload flow + history sync', () => {
 
     const items = await listHistory()
     expect(items).toHaveLength(N)
-    // No clipboard calls — all offline.
     expect(clipboardCalls).toHaveLength(0)
-    // Every item carries source=offline.
     expect(items.every((i) => i.source === 'offline')).toBe(true)
-    // All recordedAt values preserved (no lost items from concurrent writes).
     const stamps = new Set(items.map((i) => i.recordedAt))
     expect(stamps.size).toBe(N)
   })
 
   test('mixed online + offline order: only offline items count as unread', async () => {
-    // Offline (recorded earlier, synced later)
-    await fetch(`${baseUrl}/upload`, {
-      method: 'POST',
-      body: makeFormData({ source: 'offline', recordedAt: '2026-05-08T08:00:00Z' }),
-    })
-    // Online (live)
-    await fetch(`${baseUrl}/upload`, {
-      method: 'POST',
-      body: makeFormData({ source: 'online', recordedAt: '2026-05-08T10:00:00Z' }),
-    })
+    await upload({ source: 'offline', recordedAt: '2026-05-08T08:00:00Z' })
+    await upload({ source: 'online', recordedAt: '2026-05-08T10:00:00Z' })
 
     const items = await listHistory()
     expect(items).toHaveLength(2)
@@ -154,20 +164,14 @@ describe('upload flow + history sync', () => {
     expect(unread).toHaveLength(1)
     expect(unread[0]?.source).toBe('offline')
 
-    expect(clipboardCalls).toEqual(['mocked transcript']) // only the online one
+    expect(clipboardCalls).toEqual(['mocked transcript'])
   })
 
   test('mark-all-read updates only the offline (unread) items', async () => {
-    await fetch(`${baseUrl}/upload`, {
-      method: 'POST',
-      body: makeFormData({ source: 'online', recordedAt: '2026-05-08T10:00:00Z' }),
-    })
-    await fetch(`${baseUrl}/upload`, {
-      method: 'POST',
-      body: makeFormData({ source: 'offline', recordedAt: '2026-05-08T08:00:00Z' }),
-    })
+    await upload({ source: 'online', recordedAt: '2026-05-08T10:00:00Z' })
+    await upload({ source: 'offline', recordedAt: '2026-05-08T08:00:00Z' })
 
-    const r = await fetch(`${baseUrl}/history/read-all`, { method: 'POST' })
+    const r = await fetch(`${baseUrl}/history/read-all`, { method: 'POST', headers: { cookie } })
     const result = (await r.json()) as { updated: number }
     expect(result.updated).toBe(1)
 
@@ -176,14 +180,12 @@ describe('upload flow + history sync', () => {
   })
 
   test('mark single item as read', async () => {
-    const upload = await fetch(`${baseUrl}/upload`, {
-      method: 'POST',
-      body: makeFormData({ source: 'offline', recordedAt: '2026-05-08T08:00:00Z' }),
-    })
-    const data = (await upload.json()) as UploadResponse
+    const upl = await upload({ source: 'offline', recordedAt: '2026-05-08T08:00:00Z' })
+    const data = (await upl.json()) as UploadResponse
 
     const r = await fetch(`${baseUrl}/history/${encodeURIComponent(data.id)}/read`, {
       method: 'POST',
+      headers: { cookie },
     })
     expect(r.ok).toBe(true)
 
@@ -191,20 +193,14 @@ describe('upload flow + history sync', () => {
     expect(items[0]?.readAt).toBeString()
   })
 
-  test('GET /cost reflects accumulated spend', async () => {
-    const before = await (await fetch(`${baseUrl}/cost`)).json()
+  test('GET /cost reflects accumulated spend (aggregate)', async () => {
+    const before = await (await fetch(`${baseUrl}/cost`, { headers: { cookie } })).json()
     expect(before).toMatchObject({ totalUsd: 0, totalRequests: 0 })
 
-    await fetch(`${baseUrl}/upload`, {
-      method: 'POST',
-      body: makeFormData({ source: 'online', recordedAt: '2026-05-08T10:00:00Z' }),
-    })
-    await fetch(`${baseUrl}/upload`, {
-      method: 'POST',
-      body: makeFormData({ source: 'offline', recordedAt: '2026-05-08T08:00:00Z' }),
-    })
+    await upload({ source: 'online', recordedAt: '2026-05-08T10:00:00Z' })
+    await upload({ source: 'offline', recordedAt: '2026-05-08T08:00:00Z' })
 
-    const after = (await (await fetch(`${baseUrl}/cost`)).json()) as {
+    const after = (await (await fetch(`${baseUrl}/cost`, { headers: { cookie } })).json()) as {
       totalUsd: number
       totalRequests: number
     }
@@ -213,31 +209,17 @@ describe('upload flow + history sync', () => {
   })
 
   test('end-to-end scenario: online → offline → online drain', async () => {
-    // 1. Online recording (auto-read, clipboard called)
-    await fetch(`${baseUrl}/upload`, {
-      method: 'POST',
-      body: makeFormData({ source: 'online', recordedAt: '2026-05-08T10:00:00Z' }),
-    })
-
-    // 2. Two messages recorded "offline" (later synced as a drained queue)
-    await fetch(`${baseUrl}/upload`, {
-      method: 'POST',
-      body: makeFormData({ source: 'offline', recordedAt: '2026-05-08T11:00:00Z' }),
-    })
-    await fetch(`${baseUrl}/upload`, {
-      method: 'POST',
-      body: makeFormData({ source: 'offline', recordedAt: '2026-05-08T11:30:00Z' }),
-    })
+    await upload({ source: 'online', recordedAt: '2026-05-08T10:00:00Z' })
+    await upload({ source: 'offline', recordedAt: '2026-05-08T11:00:00Z' })
+    await upload({ source: 'offline', recordedAt: '2026-05-08T11:30:00Z' })
 
     const items = await listHistory()
     expect(items).toHaveLength(3)
 
-    // The online one was auto-marked-read; offline ones remain unread.
     const unread = items.filter((i) => !i.readAt)
     expect(unread).toHaveLength(2)
     expect(unread.every((i) => i.source === 'offline')).toBe(true)
 
-    // Only the online one touched the Mac clipboard.
     expect(clipboardCalls).toEqual(['mocked transcript'])
   })
 })

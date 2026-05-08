@@ -2,7 +2,7 @@
 // API requests (/upload, /cost, /history*) always go to network; offline queueing
 // is handled by the page via IndexedDB.
 
-const CACHE = 'voice-clip-v7'
+const CACHE = 'voice-clip-v8'
 const PRECACHE_URLS = ['/', '/offline']
 
 // Last-resort HTML for navigations when both '/' and '/offline' missed cache —
@@ -88,8 +88,14 @@ function isApiPath(pathname) {
     pathname === '/upload' ||
     pathname === '/cost' ||
     pathname === '/version' ||
+    pathname === '/me' ||
+    pathname === '/logout' ||
+    pathname === '/events' ||
+    pathname === '/events/ack' ||
     pathname === '/history' ||
-    pathname.startsWith('/history/')
+    pathname.startsWith('/history/') ||
+    pathname.startsWith('/signup/') ||
+    pathname.startsWith('/admin/')
   )
 }
 

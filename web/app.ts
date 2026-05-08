@@ -22,6 +22,13 @@ const historyList = document.getElementById('history-list') as HTMLElement
 const historyEmpty = document.getElementById('history-empty') as HTMLElement
 const markAllReadBtn = document.getElementById('mark-all-read') as HTMLButtonElement
 const offlinePill = document.getElementById('offline-pill') as HTMLElement
+const userPill = document.getElementById('user-pill') as HTMLButtonElement
+const userName = document.getElementById('user-name') as HTMLElement
+const userMenu = document.getElementById('user-menu') as HTMLElement
+const userMenuName = document.getElementById('user-menu-name') as HTMLElement
+const userMenuClose = document.getElementById('user-menu-close') as HTMLButtonElement
+const logoutBtn = document.getElementById('logout-btn') as HTMLButtonElement
+const installDaemonBtn = document.getElementById('install-daemon-btn') as HTMLButtonElement
 
 // === Types ===
 interface HistoryItem {
@@ -877,11 +884,76 @@ if ('serviceWorker' in navigator) {
     })
 }
 
-// === Init ===
-void refreshTotal()
-void refreshHistory()
-void scheduleDrain(1000)
-scheduleHeartbeat(30_000)
+// === Account / session ===
+interface MeResponse {
+  id: string
+  name: string
+  daemonToken: string
+}
+let me: MeResponse | null = null
 
-// Signal to the offline-redirect guard in index.html that the bundled app loaded.
-window.__voiceClipReady = true
+async function fetchMe(): Promise<MeResponse | null> {
+  const r = await fetch('/me', { cache: 'no-store' })
+  if (r.status === 401) return null
+  if (!r.ok) return null
+  return (await r.json()) as MeResponse
+}
+
+function openUserMenu(): void {
+  if (!me) return
+  userMenuName.textContent = me.name
+  userMenu.hidden = false
+  userMenu.setAttribute('aria-hidden', 'false')
+}
+
+function closeUserMenu(): void {
+  userMenu.hidden = true
+  userMenu.setAttribute('aria-hidden', 'true')
+}
+
+userPill.addEventListener('click', openUserMenu)
+userMenuClose.addEventListener('click', closeUserMenu)
+const userBackdrop = userMenu.querySelector('.user-menu-backdrop')
+if (userBackdrop) userBackdrop.addEventListener('click', closeUserMenu)
+
+logoutBtn.addEventListener('click', async () => {
+  await fetch('/logout', { method: 'POST' }).catch(() => {})
+  // After the cookie is cleared, route the user to the access-needed page.
+  // Don't redirect to '/' — they'd just bounce back to /signup-needed.
+  location.replace('/signup-needed')
+})
+
+installDaemonBtn.addEventListener('click', async () => {
+  if (!me) return
+  // Phase 1: surface the curl command. Phase 2 will add the real /install endpoint.
+  const cmd = `curl -fsSL "${location.origin}/install/voice-clip-daemon?token=${encodeURIComponent(me.daemonToken)}" | bash`
+  try {
+    await navigator.clipboard.writeText(cmd)
+    setStatus('Команда скопирована — вставь в Terminal на Маке', 'success')
+  } catch {
+    // Best-effort: show in status, user can copy by hand.
+    setStatus(cmd, 'idle')
+  }
+  closeUserMenu()
+})
+
+// === Init ===
+async function init(): Promise<void> {
+  me = await fetchMe()
+  if (!me) {
+    location.replace('/signup-needed')
+    return
+  }
+  userName.textContent = me.name
+  userPill.hidden = false
+
+  void refreshTotal()
+  void refreshHistory()
+  void scheduleDrain(1000)
+  scheduleHeartbeat(30_000)
+
+  // Signal to the offline-redirect guard in index.html that the bundled app loaded.
+  window.__voiceClipReady = true
+}
+
+void init()
