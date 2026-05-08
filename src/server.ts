@@ -1,16 +1,26 @@
 import { config } from './config'
-import { runDailyCleanupIfNeeded, saveAudio } from './storage'
+import { createAudioStorage, type AudioStorage } from './storage'
 import { transcribeAudio } from './transcribe'
 import { copyToClipboard } from './macos'
 import { calcCostUsd } from './pricing'
-import { createCostStore } from './cost-store'
-import { createHistoryStore, type HistoryItem } from './history-store'
+import { createCostStore, type CostStore } from './cost-store'
+import { createHistoryStore, type HistoryItem, type HistoryStore } from './history-store'
 import indexPage from '../web/index.html'
-
-const history = createHistoryStore(config.dataDir)
-const costs = createCostStore(config.dataDir)
+import offlinePage from '../web/offline.html'
 
 const SW_PATH = new URL('../web/sw.js', import.meta.url).pathname
+
+export interface ServerDeps {
+  history?: HistoryStore
+  costs?: CostStore
+  audio?: AudioStorage
+  transcribe?: typeof transcribeAudio
+  copyToClipboard?: typeof copyToClipboard
+  port?: number
+  certPath?: string
+  keyPath?: string
+  useTls?: boolean
+}
 
 function guessExt(mime: string): string {
   if (mime.includes('mp4') || mime.includes('m4a') || mime.includes('aac')) return '.m4a'
@@ -21,13 +31,16 @@ function guessExt(mime: string): string {
   return '.bin'
 }
 
-async function tlsOrNull(): Promise<{ cert: ReturnType<typeof Bun.file>; key: ReturnType<typeof Bun.file> } | undefined> {
-  const certFile = Bun.file(config.certPath)
-  const keyFile = Bun.file(config.keyPath)
+async function tlsOrNull(
+  certPath: string,
+  keyPath: string,
+): Promise<{ cert: ReturnType<typeof Bun.file>; key: ReturnType<typeof Bun.file> } | undefined> {
+  const certFile = Bun.file(certPath)
+  const keyFile = Bun.file(keyPath)
   const haveBoth = (await certFile.exists()) && (await keyFile.exists())
   if (!haveBoth) {
     console.warn(
-      `[tls] no cert at ${config.certPath} / ${config.keyPath} — starting HTTP. ` +
+      `[tls] no cert at ${certPath} / ${keyPath} — starting HTTP. ` +
         `iPhone microphone will NOT work over HTTP. Run: bun run cert`,
     )
     return undefined
@@ -35,13 +48,25 @@ async function tlsOrNull(): Promise<{ cert: ReturnType<typeof Bun.file>; key: Re
   return { cert: certFile, key: keyFile }
 }
 
-export async function startServer() {
-  const tls = await tlsOrNull()
+export async function startServer(deps: ServerDeps = {}) {
+  const history = deps.history ?? createHistoryStore(config.dataDir)
+  const costs = deps.costs ?? createCostStore(config.dataDir)
+  const audio = deps.audio ?? createAudioStorage(config.dataDir)
+  const transcribe = deps.transcribe ?? transcribeAudio
+  const copy = deps.copyToClipboard ?? copyToClipboard
+  const port = deps.port ?? config.port
+  const certPath = deps.certPath ?? config.certPath
+  const keyPath = deps.keyPath ?? config.keyPath
+  const useTls = deps.useTls ?? true
+
+  const tls = useTls ? await tlsOrNull(certPath, keyPath) : undefined
+
   return Bun.serve({
-    port: config.port,
+    port,
     ...(tls ? { tls } : {}),
     routes: {
       '/': indexPage,
+      '/offline': offlinePage,
       '/sw.js': () =>
         new Response(Bun.file(SW_PATH), {
           headers: {
@@ -81,10 +106,10 @@ export async function startServer() {
       '/upload': {
         POST: async (req) => {
           try {
-            await runDailyCleanupIfNeeded()
+            await audio.runDailyCleanupIfNeeded()
             const form = await req.formData()
-            const audio = form.get('audio')
-            if (!(audio instanceof Blob)) {
+            const audioBlob = form.get('audio')
+            if (!(audioBlob instanceof Blob)) {
               return Response.json({ error: 'no audio field' }, { status: 400 })
             }
             const sourceField = form.get('source')
@@ -92,11 +117,11 @@ export async function startServer() {
             const recordedAtField = form.get('recordedAt')
             const recordedAt = typeof recordedAtField === 'string' ? recordedAtField : undefined
 
-            const buf = new Uint8Array(await audio.arrayBuffer())
-            const ext = guessExt(audio.type)
-            const { base } = await saveAudio(buf, ext)
+            const buf = new Uint8Array(await audioBlob.arrayBuffer())
+            const ext = guessExt(audioBlob.type)
+            const { base } = await audio.saveAudio(buf, ext)
 
-            const result = await transcribeAudio(buf, `voice${ext}`)
+            const result = await transcribe(buf, `voice${ext}`)
             const text = result.text.trim()
 
             let costUsd: number | undefined
@@ -124,7 +149,7 @@ export async function startServer() {
               }
               await history.append(item)
               if (source === 'online') {
-                await copyToClipboard(text).catch((err) => {
+                await copy(text).catch((err) => {
                   console.error('[upload] pbcopy failed:', err)
                 })
               }

@@ -1,18 +1,19 @@
-// Service Worker — caches app shell so the PWA loads when the Mac (server) is unreachable.
+// Service Worker — caches app shell so the PWA loads when the Mac is unreachable.
 // API requests (/upload, /cost, /history*) always go to network; offline queueing
-// is handled by the page itself via IndexedDB.
+// is handled by the page via IndexedDB.
 
-const CACHE = 'voice-clip-v1'
+const CACHE = 'voice-clip-v2'
+const PRECACHE_URLS = ['/', '/offline']
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
     (async () => {
       const cache = await caches.open(CACHE)
-      try {
-        await cache.add('/')
-      } catch (e) {
-        // first install while offline — fine, will populate on next online navigation
-      }
+      // Precache best-effort: if any URL fails (first install while offline),
+      // it will populate on next online navigation.
+      await Promise.all(
+        PRECACHE_URLS.map((url) => cache.add(url).catch(() => undefined)),
+      )
       await self.skipWaiting()
     })(),
   )
@@ -47,18 +48,23 @@ self.addEventListener('fetch', (event) => {
 
   event.respondWith(
     (async () => {
+      const cache = await caches.open(CACHE)
+
       try {
         const fresh = await fetch(req)
         if (fresh && fresh.ok) {
-          const cache = await caches.open(CACHE)
-          cache.put(req, fresh.clone()).catch(() => {})
+          // Stash a copy for offline use.
+          cache.put(req, fresh.clone()).catch(() => undefined)
         }
         return fresh
       } catch {
-        const cache = await caches.open(CACHE)
         const cached = await cache.match(req)
         if (cached) return cached
+
+        // Last resort for navigations: serve the offline page.
         if (req.mode === 'navigate') {
+          const offlinePage = await cache.match('/offline')
+          if (offlinePage) return offlinePage
           const root = await cache.match('/')
           if (root) return root
         }

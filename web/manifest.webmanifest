@@ -1,0 +1,11 @@
+{
+  "name": "VoiceClip",
+  "short_name": "VoiceClip",
+  "description": "Self-hosted voice → clipboard",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#07070b",
+  "theme_color": "#07070b"
+}

@@ -2,16 +2,13 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createAudioStorage } from '../src/storage'
 
-// storage.ts hard-codes config.dataDir at module load. We swap it via env BEFORE
-// dynamic-importing the module under test.
-
-describe('storage daily cleanup', () => {
+describe('audio storage daily cleanup', () => {
   let dir: string
 
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), 'voice-clip-storage-'))
-    process.env.DATA_DIR = dir
   })
 
   afterEach(async () => {
@@ -28,7 +25,6 @@ describe('storage daily cleanup', () => {
   }
 
   test('removes recordings whose date prefix is not today, keeps today', async () => {
-    process.env.OPENAI_API_KEY = 'test-key' // config.ts requires it at module load
     const recordings = join(dir, 'recordings')
     await mkdir(recordings, { recursive: true })
 
@@ -36,9 +32,8 @@ describe('storage daily cleanup', () => {
     await writeFile(join(recordings, '2025-12-31_23-59-59_bbb.m4a'), 'old')
     await writeFile(join(recordings, `${todayPrefix()}_12-00-00_ccc.m4a`), 'today')
 
-    // dynamic import so DATA_DIR is read fresh
-    const mod = (await import(`../src/storage.ts?cb=${Date.now()}`)) as typeof import('../src/storage')
-    await mod.runDailyCleanupIfNeeded()
+    const storage = createAudioStorage(dir)
+    await storage.runDailyCleanupIfNeeded()
 
     const remaining = await readdir(recordings)
     expect(remaining).toHaveLength(1)
@@ -49,16 +44,26 @@ describe('storage daily cleanup', () => {
   })
 
   test('is a no-op when state already says today', async () => {
-    process.env.OPENAI_API_KEY = 'test-key'
     const recordings = join(dir, 'recordings')
     await mkdir(recordings, { recursive: true })
     await writeFile(join(dir, '.last-cleanup'), todayPrefix())
     await writeFile(join(recordings, '2024-01-01_10-00-00_old.m4a'), 'still-here')
 
-    const mod = (await import(`../src/storage.ts?cb=${Date.now()}-2`)) as typeof import('../src/storage')
-    await mod.runDailyCleanupIfNeeded()
+    const storage = createAudioStorage(dir)
+    await storage.runDailyCleanupIfNeeded()
 
     const remaining = await readdir(recordings)
     expect(remaining).toEqual(['2024-01-01_10-00-00_old.m4a'])
+  })
+
+  test('saveAudio writes file with date-prefixed name and creates dir', async () => {
+    const storage = createAudioStorage(dir)
+    const result = await storage.saveAudio(new Uint8Array([1, 2, 3]), '.m4a')
+
+    expect(result.base.startsWith(todayPrefix())).toBe(true)
+    expect(result.pathOnDisk.endsWith(`${result.base}.m4a`)).toBe(true)
+
+    const written = await readFile(result.pathOnDisk)
+    expect(written.byteLength).toBe(3)
   })
 })

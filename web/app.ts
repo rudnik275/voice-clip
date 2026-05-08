@@ -1,4 +1,10 @@
 // === DOM refs ===
+declare global {
+  interface Window {
+    __voiceClipReady?: boolean
+  }
+}
+
 const recBtn = document.getElementById('rec') as HTMLButtonElement
 const recLabel = document.getElementById('rec-label') as HTMLElement
 const recTime = document.getElementById('rec-time') as HTMLElement
@@ -15,6 +21,7 @@ const historyClose = document.getElementById('history-close') as HTMLButtonEleme
 const historyList = document.getElementById('history-list') as HTMLElement
 const historyEmpty = document.getElementById('history-empty') as HTMLElement
 const markAllReadBtn = document.getElementById('mark-all-read') as HTMLButtonElement
+const offlinePill = document.getElementById('offline-pill') as HTMLElement
 
 // === Types ===
 interface HistoryItem {
@@ -68,6 +75,47 @@ let lastDurationSec = 0
 // === Drain state ===
 let isDraining = false
 let drainTimer: number | null = null
+
+// === Reachability tracking ===
+let isReachable = true
+let heartbeatTimer: number | null = null
+
+function setReachable(reachable: boolean): void {
+  if (reachable === isReachable) return
+  isReachable = reachable
+  offlinePill.hidden = reachable
+  if (reachable) {
+    // Just came back online — drain queue and refresh views.
+    void scheduleDrain(300)
+    void refreshHistory()
+  }
+}
+
+function scheduleHeartbeat(delayMs: number): void {
+  if (heartbeatTimer !== null) clearTimeout(heartbeatTimer)
+  heartbeatTimer = window.setTimeout(() => {
+    void heartbeat()
+  }, delayMs)
+}
+
+async function heartbeat(): Promise<void> {
+  try {
+    const r = await fetch('/cost', { cache: 'no-store' })
+    if (r.ok) {
+      const data = (await r.json()) as { totalUsd: number; totalRequests: number }
+      updateTotalPill(data.totalUsd, data.totalRequests)
+      setReachable(true)
+    } else {
+      setReachable(false)
+    }
+  } catch {
+    setReachable(false)
+  } finally {
+    // Heartbeat cadence: faster while offline (so we notice recovery quickly),
+    // calmer while everything's fine.
+    scheduleHeartbeat(isReachable ? 30_000 : 8_000)
+  }
+}
 
 // === In-memory caches ===
 let history: HistoryItem[] = []
@@ -314,12 +362,21 @@ async function uploadAudio(blob: Blob, mime: string, recordedAt: string, source:
   fd.append('audio', blob, `voice${extFor(mime)}`)
   fd.append('recordedAt', recordedAt)
   fd.append('source', source)
-  const r = await fetch('/upload', { method: 'POST', body: fd })
-  if (!r.ok) {
-    const errText = await r.text().catch(() => `HTTP ${r.status}`)
-    throw new Error(errText || `HTTP ${r.status}`)
+  try {
+    const r = await fetch('/upload', { method: 'POST', body: fd })
+    if (!r.ok) {
+      // Server reached but failed → still online from network's perspective; bubble error.
+      setReachable(true)
+      const errText = await r.text().catch(() => `HTTP ${r.status}`)
+      throw new Error(errText || `HTTP ${r.status}`)
+    }
+    setReachable(true)
+    return (await r.json()) as UploadResponse
+  } catch (err) {
+    // TypeError from fetch == network failure
+    if (err instanceof TypeError) setReachable(false)
+    throw err
   }
-  return (await r.json()) as UploadResponse
 }
 
 function scheduleDrain(delayMs: number): void {
@@ -516,13 +573,15 @@ async function handleStop(): Promise<void> {
 // === History ===
 async function refreshHistory(): Promise<void> {
   try {
-    const r = await fetch('/history')
+    const r = await fetch('/history', { cache: 'no-store' })
     if (r.ok) {
       const list = (await r.json()) as HistoryItem[]
       history = list.slice().sort((a, b) => (b.recordedAt ?? b.ts).localeCompare(a.recordedAt ?? a.ts))
+      setReachable(true)
     }
-  } catch {
-    // server may be offline — keep current cache
+  } catch (err) {
+    if (err instanceof TypeError) setReachable(false)
+    // keep current cache
   }
   pendingItems = await queueList().catch(() => pendingItems)
   renderHistory()
@@ -686,12 +745,13 @@ function updateTotalPill(usd: number, count: number): void {
 
 async function refreshTotal(): Promise<void> {
   try {
-    const r = await fetch('/cost')
+    const r = await fetch('/cost', { cache: 'no-store' })
     if (!r.ok) return
     const data = (await r.json()) as { totalUsd: number; totalRequests: number }
     updateTotalPill(data.totalUsd, data.totalRequests)
-  } catch {
-    // offline — keep current value
+    setReachable(true)
+  } catch (err) {
+    if (err instanceof TypeError) setReachable(false)
   }
 }
 
@@ -719,7 +779,15 @@ copyBtn.addEventListener('click', async () => {
 })
 
 window.addEventListener('online', () => {
-  void scheduleDrain(500)
+  scheduleHeartbeat(0)
+})
+
+window.addEventListener('offline', () => {
+  setReachable(false)
+})
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) scheduleHeartbeat(0)
 })
 
 // === Service Worker registration ===
@@ -733,3 +801,7 @@ if ('serviceWorker' in navigator) {
 void refreshTotal()
 void refreshHistory()
 void scheduleDrain(1000)
+scheduleHeartbeat(30_000)
+
+// Signal to the offline-redirect guard in index.html that the bundled app loaded.
+window.__voiceClipReady = true

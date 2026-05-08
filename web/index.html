@@ -8,7 +8,21 @@
     <meta name="apple-mobile-web-app-title" content="VoiceClip" />
     <meta name="theme-color" content="#07070b" />
     <title>VoiceClip</title>
+    <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="stylesheet" href="./style.css" />
+    <script>
+      // Last-resort offline guard: if the bundled app didn't initialize within 4s
+      // (e.g. cache miss on hashed JS bundle after a server restart while the
+      // device was offline), redirect to the offline page so we don't show a
+      // white screen.
+      window.addEventListener('load', () => {
+        setTimeout(() => {
+          if (!window.__voiceClipReady) {
+            location.replace('/offline')
+          }
+        }, 4000)
+      })
+    </script>
   </head>
   <body>
     <header class="topbar">
@@ -20,7 +34,10 @@
         </svg>
         <span id="history-badge" class="topbar-badge" hidden>0</span>
       </button>
-      <span id="total-pill" class="total-pill" title="Total spent">—</span>
+      <div class="topbar-right">
+        <span id="offline-pill" class="offline-pill" hidden>OFFLINE</span>
+        <span id="total-pill" class="total-pill" title="Total spent">—</span>
+      </div>
     </header>
 
     <main>

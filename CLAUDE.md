@@ -118,7 +118,7 @@ src/
   config.ts          env config; required: OPENAI_API_KEY; optional: PORT, TLS_*, DATA_DIR
   index.ts           entry: starts server, handles SIGINT/SIGTERM
   server.ts          Bun.serve with TLS; wires stores; routes /, /sw.js, /cost, /history*, /upload
-  storage.ts         saveAudio + daily cleanup of data/recordings/
+  storage.ts         createAudioStorage(dataDir) → saveAudio + daily cleanup of data/recordings/
   history-store.ts   createHistoryStore(dataDir) → CRUD on data/history.json
   cost-store.ts      createCostStore(dataDir) → cumulative spend in data/cost.json
   pricing.ts         calcCostUsd(usage) per OpenAI gpt-4o-transcribe rates
@@ -153,7 +153,13 @@ History.json + cost.json are canonical. Audio is debug-only.
 
 ## Stores: factory pattern
 
-`createHistoryStore(dataDir)` and `createCostStore(dataDir)` take dataDir as a parameter — **don't read `config.dataDir` directly inside stores**. Server wires `config.dataDir` at startup; tests pass a temp dir. This is the testability contract — keep it.
+All three stores — `createHistoryStore(dataDir)`, `createCostStore(dataDir)`, `createAudioStorage(dataDir)` — take dataDir as a parameter. **Don't read `config.dataDir` directly inside stores or storage code.** Server wires `config.dataDir` at startup; tests pass a temp dir. This is the testability contract — keep it.
+
+History- and cost-store both serialize their write paths through a single Promise-chain mutex so concurrent uploads from multiple devices (e.g. phone + tablet draining offline queues at the same time) can't lose items via load → mutate → save races.
+
+## Server: dependency injection
+
+`startServer(deps)` accepts an optional `ServerDeps` object: `history`, `costs`, `audio`, `transcribe`, `copyToClipboard`, `port`, `certPath`, `keyPath`, `useTls`. Production (`src/index.ts`) calls it with no args — sensible defaults wire real stores, real OpenAI, real `pbcopy`. Tests pass mocks: stub `transcribe` returning canned `{text, usage}`, stub `copyToClipboard` capturing calls, real stores backed by a temp dir. Use `useTls: false` and `port: 0` for in-process integration tests on an ephemeral HTTP port.
 
 ## Offline protocol
 
@@ -206,7 +212,8 @@ Typography: SF Pro Display / system stack, letter-spacing `-0.01em` for body, `0
 ## Testing
 
 - `bun test` runs everything in `tests/`. Tests use temp dirs; no mocks needed for stores.
-- Server integration tests would require mocking OpenAI — not done yet. If you add them, mock at the module level via `bun:test` `mock.module()` rather than refactoring `transcribe.ts`.
+- **Unit tests** (history-store, cost-store, pricing, storage cleanup) — pure factory + temp dir.
+- **Integration tests** (`tests/upload-flow.test.ts`) — spin up `startServer` on an ephemeral HTTP port (`port: 0, useTls: false`) with stubbed `transcribe` and `copyToClipboard`, then drive it via `fetch()`. Covers online auto-read + offline-stays-unread + clipboard-only-on-online + multi-device parallel drain.
 - `bun run typecheck` runs both server-side (`tsc --noEmit`) and web-side (`tsc --noEmit -p web`) — they have separate tsconfigs because web needs DOM lib.
 
 ## Deployment / lifecycle

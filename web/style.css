@@ -334,6 +334,33 @@ main {
   border-radius: 999px;
 }
 
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.offline-pill {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #ff8a93;
+  background: rgba(255, 100, 100, 0.14);
+  border: 1px solid rgba(255, 100, 100, 0.30);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  padding: 5px 11px;
+  border-radius: 999px;
+  animation: offline-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes offline-pulse {
+  0%, 100% { opacity: 0.85; }
+  50%      { opacity: 0.55; }
+}
+
 /* === History modal === */
 
 .history-modal {
