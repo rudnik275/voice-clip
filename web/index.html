@@ -90,11 +90,11 @@
         <h1>Mac не отвечает</h1>
         <p>Не получается загрузить приложение. Подключись к домашнему wifi и попробуй снова.</p>
         <button type="button" onclick="location.reload()">Попробовать снова</button>
-        <span class="version">v10</span>
+        <span class="version">v11</span>
       </div>
     </div>
 
-    <div id="version-tag">v10</div>
+    <div id="version-tag">v11</div>
 
     <header class="topbar">
       <button id="history-btn" type="button" class="topbar-btn" aria-label="History">
@@ -121,6 +121,17 @@
         <button id="install-daemon-btn" type="button" class="ghost-btn">📎 Подключить Mac</button>
         <button id="logout-btn" type="button" class="ghost-btn danger">Выйти</button>
         <button id="user-menu-close" type="button" class="ghost-btn">Закрыть</button>
+      </div>
+    </div>
+
+    <div id="share-cmd-modal" class="user-menu" hidden role="dialog" aria-hidden="true" aria-label="Команда установки">
+      <div class="user-menu-backdrop" data-close="share-cmd"></div>
+      <div class="user-menu-sheet share-cmd-sheet">
+        <p class="user-menu-name">Команда для Mac</p>
+        <p class="share-cmd-hint">Не получилось скопировать автоматически — выдели и скопируй вручную, потом вставь в Terminal на Маке.</p>
+        <textarea id="share-cmd-text" class="share-cmd-text" readonly></textarea>
+        <button id="share-cmd-copy" type="button" class="ghost-btn">Скопировать</button>
+        <button id="share-cmd-close" type="button" class="ghost-btn" data-close="share-cmd">Закрыть</button>
       </div>
     </div>
 

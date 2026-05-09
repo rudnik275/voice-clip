@@ -29,6 +29,10 @@ const userMenuName = document.getElementById('user-menu-name') as HTMLElement
 const userMenuClose = document.getElementById('user-menu-close') as HTMLButtonElement
 const logoutBtn = document.getElementById('logout-btn') as HTMLButtonElement
 const installDaemonBtn = document.getElementById('install-daemon-btn') as HTMLButtonElement
+const shareCmdModal = document.getElementById('share-cmd-modal') as HTMLElement
+const shareCmdText = document.getElementById('share-cmd-text') as HTMLTextAreaElement
+const shareCmdCopyBtn = document.getElementById('share-cmd-copy') as HTMLButtonElement
+const shareCmdCloseBtn = document.getElementById('share-cmd-close') as HTMLButtonElement
 
 // === Types ===
 interface HistoryItem {
@@ -192,6 +196,46 @@ function setStatus(msg: string, kind: 'idle' | 'error' | 'success' = 'idle'): vo
   statusEl.textContent = msg
   statusEl.classList.toggle('error', kind === 'error')
   statusEl.classList.toggle('success', kind === 'success')
+}
+
+// Robust copy: tries modern Clipboard API, falls back to a temp textarea +
+// execCommand path that works inside iOS Safari standalone PWAs where the
+// async clipboard API silently rejects with NotAllowedError.
+async function copyText(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch {
+    /* fall through to legacy path */
+  }
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.setAttribute('readonly', '')
+    ta.style.position = 'fixed'
+    ta.style.top = '0'
+    ta.style.left = '0'
+    ta.style.opacity = '0'
+    ta.style.pointerEvents = 'none'
+    document.body.appendChild(ta)
+    // iOS Safari: execCommand('copy') needs a real selection on a contenteditable
+    // node. readOnly + Range selection is the combination that survives both
+    // desktop Safari and iOS standalone PWAs.
+    const range = document.createRange()
+    range.selectNodeContents(ta)
+    const sel = window.getSelection()
+    sel?.removeAllRanges()
+    sel?.addRange(range)
+    ta.setSelectionRange(0, text.length)
+    const ok = document.execCommand('copy')
+    sel?.removeAllRanges()
+    document.body.removeChild(ta)
+    return ok
+  } catch {
+    return false
+  }
 }
 
 function pad(n: number): string {
@@ -923,18 +967,48 @@ logoutBtn.addEventListener('click', async () => {
   location.replace('/signup-needed')
 })
 
+function openShareCmdModal(cmd: string): void {
+  shareCmdText.value = cmd
+  shareCmdModal.hidden = false
+  shareCmdModal.setAttribute('aria-hidden', 'false')
+  // Defer selection so iOS Safari has the textarea actually rendered.
+  setTimeout(() => {
+    shareCmdText.focus()
+    shareCmdText.setSelectionRange(0, cmd.length)
+  }, 50)
+}
+
+function closeShareCmdModal(): void {
+  shareCmdModal.hidden = true
+  shareCmdModal.setAttribute('aria-hidden', 'true')
+}
+
+shareCmdCloseBtn.addEventListener('click', closeShareCmdModal)
+const shareCmdBackdrop = shareCmdModal.querySelector('.user-menu-backdrop')
+if (shareCmdBackdrop) shareCmdBackdrop.addEventListener('click', closeShareCmdModal)
+
+shareCmdCopyBtn.addEventListener('click', async () => {
+  const ok = await copyText(shareCmdText.value)
+  if (ok) {
+    setStatus('Команда скопирована — вставь в Terminal на Маке', 'success')
+    closeShareCmdModal()
+  } else {
+    shareCmdText.focus()
+    shareCmdText.setSelectionRange(0, shareCmdText.value.length)
+    setStatus('Скопируй вручную (Cmd/Ctrl+C)', 'error')
+  }
+})
+
 installDaemonBtn.addEventListener('click', async () => {
   if (!me) return
-  // Phase 1: surface the curl command. Phase 2 will add the real /install endpoint.
   const cmd = `curl -fsSL "${location.origin}/install/voice-clip-daemon?token=${encodeURIComponent(me.daemonToken)}" | bash`
-  try {
-    await navigator.clipboard.writeText(cmd)
-    setStatus('Команда скопирована — вставь в Terminal на Маке', 'success')
-  } catch {
-    // Best-effort: show in status, user can copy by hand.
-    setStatus(cmd, 'idle')
-  }
   closeUserMenu()
+  const ok = await copyText(cmd)
+  if (ok) {
+    setStatus('Команда скопирована — вставь в Terminal на Маке', 'success')
+  } else {
+    openShareCmdModal(cmd)
+  }
 })
 
 // === Init ===
