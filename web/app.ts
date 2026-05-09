@@ -8,12 +8,8 @@ declare global {
 const recBtn = document.getElementById('rec') as HTMLButtonElement
 const recLabel = document.getElementById('rec-label') as HTMLElement
 const recTime = document.getElementById('rec-time') as HTMLElement
-const result = document.getElementById('result') as HTMLElement
-const textArea = document.getElementById('text') as HTMLTextAreaElement
-const copyBtn = document.getElementById('copy') as HTMLButtonElement
 const statusEl = document.getElementById('status') as HTMLElement
 const totalPill = document.getElementById('total-pill') as HTMLElement
-const costLine = document.getElementById('cost-line') as HTMLElement
 const historyBtn = document.getElementById('history-btn') as HTMLButtonElement
 const historyBadge = document.getElementById('history-badge') as HTMLElement
 const historyModal = document.getElementById('history-modal') as HTMLElement
@@ -194,17 +190,31 @@ const TOAST_DEFAULT_MS = 3500
 function setStatus(
   msg: string,
   kind: 'idle' | 'error' | 'success' = 'idle',
-  opts: { sticky?: boolean; durationMs?: number } = {},
+  opts: { sticky?: boolean; durationMs?: number; preview?: string } = {},
 ): void {
   if (statusTimer != null) {
     clearTimeout(statusTimer)
     statusTimer = null
   }
   if (!msg) {
-    statusEl.classList.remove('show', 'error', 'success')
+    statusEl.classList.remove('show', 'error', 'success', 'has-preview')
+    statusEl.textContent = ''
     return
   }
-  statusEl.textContent = msg
+  statusEl.textContent = ''
+  if (opts.preview) {
+    const titleEl = document.createElement('span')
+    titleEl.className = 'toast-title'
+    titleEl.textContent = msg
+    const previewEl = document.createElement('span')
+    previewEl.className = 'toast-preview'
+    previewEl.textContent = opts.preview
+    statusEl.append(titleEl, previewEl)
+    statusEl.classList.add('has-preview')
+  } else {
+    statusEl.textContent = msg
+    statusEl.classList.remove('has-preview')
+  }
   statusEl.classList.toggle('error', kind === 'error')
   statusEl.classList.toggle('success', kind === 'success')
   statusEl.classList.add('show')
@@ -498,7 +508,6 @@ async function drain(): Promise<void> {
 async function startRecording(): Promise<void> {
   if (isRecording) return
   setStatus('')
-  result.hidden = true
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: true })
   } catch {
@@ -624,18 +633,12 @@ async function handleStop(): Promise<void> {
       setStatus('Пустая транскрипция', 'error')
       pendingReject?.(new Error('empty'))
     } else {
-      textArea.value = text
-      result.hidden = false
-      textArea.focus()
-      textArea.select()
-      setStatus('Готово — скопировано в буфер', 'success')
+      const title = typeof data.costUsd === 'number'
+        ? `Скопировано · ${fmtUsd(data.costUsd)}`
+        : 'Скопировано'
+      setStatus(title, 'success', { preview: text, durationMs: 5000 })
       pendingResolve?.(new Blob([text], { type: 'text/plain' }))
       sfxDone()
-    }
-    if (typeof data.costUsd === 'number') {
-      costLine.textContent = `${fmtUsd(data.costUsd)} · this request`
-    } else {
-      costLine.textContent = ''
     }
     if (typeof data.totalUsd === 'number' && typeof data.totalRequests === 'number') {
       updateTotalPill(data.totalUsd, data.totalRequests)
@@ -851,23 +854,6 @@ async function refreshTotal(): Promise<void> {
 recBtn.addEventListener('click', () => {
   if (isRecording) stopRecording()
   else void startRecording()
-})
-
-copyBtn.addEventListener('click', async () => {
-  const ok = await copyText(textArea.value)
-  if (ok) {
-    copyBtn.classList.add('copied')
-    copyBtn.textContent = 'Copied'
-    setStatus('Скопировано', 'success')
-    setTimeout(() => {
-      copyBtn.classList.remove('copied')
-      copyBtn.textContent = 'Copy'
-    }, 1400)
-  } else {
-    textArea.focus()
-    textArea.select()
-    setStatus('Не получилось скопировать', 'error')
-  }
 })
 
 window.addEventListener('online', () => {

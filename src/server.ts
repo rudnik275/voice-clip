@@ -30,7 +30,7 @@ const DAEMON_SRC_PATH = new URL('../daemon/index.ts', import.meta.url).pathname
 const DAEMON_PLIST_PATH = new URL('../daemon/com.voiceclip.daemon.plist.tmpl', import.meta.url).pathname
 const DAEMON_INSTALL_PATH = new URL('../daemon/install.sh.tmpl', import.meta.url).pathname
 
-const APP_VERSION = 'v12'
+const APP_VERSION = 'v13'
 
 export interface ServerDeps {
   dataDir?: string

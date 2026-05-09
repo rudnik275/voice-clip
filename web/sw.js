@@ -2,7 +2,7 @@
 // API requests (/upload, /cost, /history*) always go to network; offline queueing
 // is handled by the page via IndexedDB.
 
-const CACHE = 'voice-clip-v12'
+const CACHE = 'voice-clip-v13'
 const PRECACHE_URLS = ['/', '/offline']
 
 // Last-resort HTML for navigations when both '/' and '/offline' missed cache —
