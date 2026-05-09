@@ -29,10 +29,6 @@ const userMenuName = document.getElementById('user-menu-name') as HTMLElement
 const userMenuClose = document.getElementById('user-menu-close') as HTMLButtonElement
 const logoutBtn = document.getElementById('logout-btn') as HTMLButtonElement
 const installDaemonBtn = document.getElementById('install-daemon-btn') as HTMLButtonElement
-const shareCmdModal = document.getElementById('share-cmd-modal') as HTMLElement
-const shareCmdText = document.getElementById('share-cmd-text') as HTMLTextAreaElement
-const shareCmdCopyBtn = document.getElementById('share-cmd-copy') as HTMLButtonElement
-const shareCmdCloseBtn = document.getElementById('share-cmd-close') as HTMLButtonElement
 
 // === Types ===
 interface HistoryItem {
@@ -192,10 +188,33 @@ async function queueList(): Promise<PendingItem[]> {
 }
 
 // === Helpers ===
-function setStatus(msg: string, kind: 'idle' | 'error' | 'success' = 'idle'): void {
+let statusTimer: number | null = null
+const TOAST_DEFAULT_MS = 3500
+
+function setStatus(
+  msg: string,
+  kind: 'idle' | 'error' | 'success' = 'idle',
+  opts: { sticky?: boolean; durationMs?: number } = {},
+): void {
+  if (statusTimer != null) {
+    clearTimeout(statusTimer)
+    statusTimer = null
+  }
+  if (!msg) {
+    statusEl.classList.remove('show', 'error', 'success')
+    return
+  }
   statusEl.textContent = msg
   statusEl.classList.toggle('error', kind === 'error')
   statusEl.classList.toggle('success', kind === 'success')
+  statusEl.classList.add('show')
+  if (!opts.sticky) {
+    const ms = opts.durationMs ?? TOAST_DEFAULT_MS
+    statusTimer = window.setTimeout(() => {
+      statusEl.classList.remove('show')
+      statusTimer = null
+    }, ms)
+  }
 }
 
 // Robust copy: tries modern Clipboard API, falls back to a temp textarea +
@@ -596,7 +615,7 @@ async function handleStop(): Promise<void> {
     return
   }
 
-  setStatus('Транскрибируем…')
+  setStatus('Транскрибируем…', 'idle', { sticky: true })
 
   try {
     const data = await uploadAudio(blob, mime, recordedAt, 'online')
@@ -759,12 +778,8 @@ function renderHistory(): void {
     copyItemBtn.type = 'button'
     copyItemBtn.textContent = 'Копировать'
     copyItemBtn.addEventListener('click', async () => {
-      try {
-        await navigator.clipboard.writeText(h.text)
-        setStatus('Скопировано', 'success')
-      } catch {
-        // best effort
-      }
+      const ok = await copyText(h.text)
+      setStatus(ok ? 'Скопировано' : 'Не получилось скопировать', ok ? 'success' : 'error')
     })
     actions.appendChild(copyItemBtn)
 
@@ -839,8 +854,8 @@ recBtn.addEventListener('click', () => {
 })
 
 copyBtn.addEventListener('click', async () => {
-  try {
-    await navigator.clipboard.writeText(textArea.value)
+  const ok = await copyText(textArea.value)
+  if (ok) {
     copyBtn.classList.add('copied')
     copyBtn.textContent = 'Copied'
     setStatus('Скопировано', 'success')
@@ -848,10 +863,10 @@ copyBtn.addEventListener('click', async () => {
       copyBtn.classList.remove('copied')
       copyBtn.textContent = 'Copy'
     }, 1400)
-  } catch {
+  } else {
     textArea.focus()
     textArea.select()
-    setStatus('Скопируй вручную (Cmd/Ctrl+C)', 'error')
+    setStatus('Не получилось скопировать', 'error')
   }
 })
 
@@ -967,48 +982,15 @@ logoutBtn.addEventListener('click', async () => {
   location.replace('/signup-needed')
 })
 
-function openShareCmdModal(cmd: string): void {
-  shareCmdText.value = cmd
-  shareCmdModal.hidden = false
-  shareCmdModal.setAttribute('aria-hidden', 'false')
-  // Defer selection so iOS Safari has the textarea actually rendered.
-  setTimeout(() => {
-    shareCmdText.focus()
-    shareCmdText.setSelectionRange(0, cmd.length)
-  }, 50)
-}
-
-function closeShareCmdModal(): void {
-  shareCmdModal.hidden = true
-  shareCmdModal.setAttribute('aria-hidden', 'true')
-}
-
-shareCmdCloseBtn.addEventListener('click', closeShareCmdModal)
-const shareCmdBackdrop = shareCmdModal.querySelector('.user-menu-backdrop')
-if (shareCmdBackdrop) shareCmdBackdrop.addEventListener('click', closeShareCmdModal)
-
-shareCmdCopyBtn.addEventListener('click', async () => {
-  const ok = await copyText(shareCmdText.value)
-  if (ok) {
-    setStatus('Команда скопирована — вставь в Terminal на Маке', 'success')
-    closeShareCmdModal()
-  } else {
-    shareCmdText.focus()
-    shareCmdText.setSelectionRange(0, shareCmdText.value.length)
-    setStatus('Скопируй вручную (Cmd/Ctrl+C)', 'error')
-  }
-})
-
 installDaemonBtn.addEventListener('click', async () => {
   if (!me) return
   const cmd = `curl -fsSL "${location.origin}/install/voice-clip-daemon?token=${encodeURIComponent(me.daemonToken)}" | bash`
   closeUserMenu()
   const ok = await copyText(cmd)
-  if (ok) {
-    setStatus('Команда скопирована — вставь в Terminal на Маке', 'success')
-  } else {
-    openShareCmdModal(cmd)
-  }
+  setStatus(
+    ok ? 'Команда скопирована — вставь в Terminal на Маке' : 'Не получилось скопировать — попробуй ещё раз',
+    ok ? 'success' : 'error',
+  )
 })
 
 // === Init ===
