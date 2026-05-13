@@ -1,0 +1,29 @@
+# Production compose file for the VPS deploy.
+#
+# Cloudflare Tunnel (running in the shared `infra-net` network) terminates
+# TLS and routes voice.rudifamily.uk → voice-clip:8080. The host port
+# binding is loopback-only as a defence-in-depth.
+
+services:
+  voice-clip:
+    image: ghcr.io/rudnik275/voice-clip:latest
+    container_name: voice-clip
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    env_file: .env
+    volumes:
+      # SQLite db + WAL + per-user state live here. Persists across image rolls.
+      - ./data:/data
+    networks:
+      - infra-net
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8080/version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  infra-net:
+    external: true
