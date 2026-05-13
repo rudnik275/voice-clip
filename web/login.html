@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#07070b" />
+    <title>voice-clip — sign in</title>
+    <link rel="stylesheet" href="/style.css" />
+    <style>
+      .login-wrap {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100dvh;
+        gap: 32px;
+        padding: 24px;
+        text-align: center;
+      }
+      .login-card {
+        width: min(420px, 92vw);
+        padding: 36px 28px 32px;
+        background: var(--glass-bg);
+        border: 1px solid var(--glass-border-strong);
+        backdrop-filter: blur(40px) saturate(180%);
+        -webkit-backdrop-filter: blur(40px) saturate(180%);
+        border-radius: 28px;
+        box-shadow: var(--shadow-deep);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 22px;
+      }
+      .login-title {
+        margin: 0;
+        font-size: 28px;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+        background: linear-gradient(135deg, var(--accent-a), var(--accent-b));
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+      .login-sub {
+        margin: 0;
+        color: var(--muted);
+        font-size: 14px;
+        max-width: 28ch;
+      }
+      .google-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
+        padding: 14px 22px;
+        border: 1px solid var(--glass-border-strong);
+        border-radius: 999px;
+        background: var(--glass-bg-hover);
+        color: var(--fg);
+        font-size: 15px;
+        font-weight: 500;
+        text-decoration: none;
+        cursor: pointer;
+        transition: transform 0.18s cubic-bezier(0.34, 1.4, 0.64, 1),
+          background 0.18s ease;
+        backdrop-filter: blur(20px) saturate(180%);
+        -webkit-backdrop-filter: blur(20px) saturate(180%);
+      }
+      .google-btn:hover {
+        background: rgba(255, 255, 255, 0.10);
+      }
+      .google-btn:active {
+        transform: scale(0.97);
+      }
+      .google-btn svg {
+        width: 20px;
+        height: 20px;
+        flex: none;
+      }
+      .footer-version {
+        position: fixed;
+        bottom: max(env(safe-area-inset-bottom), 12px);
+        right: 14px;
+        font-size: 11px;
+        color: var(--muted);
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        font-variant-numeric: tabular-nums;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="login-wrap">
+      <div class="login-card">
+        <h1 class="login-title">voice-clip</h1>
+        <p class="login-sub">Sign in to record audio and grab transcripts on every device.</p>
+        <a class="google-btn" href="/auth/google/start">
+          <svg viewBox="0 0 48 48" aria-hidden="true">
+            <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.3 29.3 35.5 24 35.5 17.6 35.5 12.5 30.4 12.5 24S17.6 12.5 24 12.5c2.9 0 5.6 1.1 7.7 2.9l5.7-5.7C33.9 6.3 29.2 4.5 24 4.5 13.2 4.5 4.5 13.2 4.5 24S13.2 43.5 24 43.5c10.8 0 19.5-8.7 19.5-19.5 0-1.2-.1-2.3-.4-3.5z" />
+            <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 16 19 12.5 24 12.5c2.9 0 5.6 1.1 7.7 2.9l5.7-5.7C33.9 6.3 29.2 4.5 24 4.5 16.3 4.5 9.7 8.8 6.3 14.7z" />
+            <path fill="#4CAF50" d="M24 43.5c5.1 0 9.7-1.7 13.3-4.7l-6.1-5c-2 1.4-4.5 2.2-7.2 2.2-5.2 0-9.6-3.1-11.3-7.5l-6.6 5.1C9.5 39 16.2 43.5 24 43.5z" />
+            <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.3 4.3-4.2 5.8l6.1 5c4.3-3.9 7.3-9.7 7.3-15.3 0-1.2-.1-2.3-.4-3.5z" />
+          </svg>
+          Sign in with Google
+        </a>
+      </div>
+    </div>
+    <div class="footer-version">__APP_VERSION__</div>
+  </body>
+</html>

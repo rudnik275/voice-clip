@@ -1,17 +1,13 @@
 {
-  "name": "telegram-speech-to-text",
-  "version": "0.1.0",
+  "name": "voice-clip",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "bun run src/index.ts",
     "dev": "bun --watch src/index.ts",
     "test": "bun test",
-    "typecheck": "bun x tsc --noEmit && bun x tsc --noEmit -p web",
-    "cert": "bash scripts/setup-cert.sh",
-    "pm2:start": "pm2 start src/index.ts --interpreter $HOME/.bun/bin/bun --name voice-clip",
-    "pm2:logs": "pm2 logs voice-clip",
-    "pm2:save": "pm2 save"
+    "typecheck": "bun x tsc --noEmit"
   },
   "devDependencies": {
     "@types/bun": "latest"
