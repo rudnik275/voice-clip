@@ -1,80 +1,73 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+// Sessions: opaque hex tokens stored in SQLite, idle-TTL refreshed on each
+// resolve(). 90-day window — matches a typical "stay signed in" flow without
+// being indefinite.
+//
+// The cookie format is HttpOnly `session=<hex>` — see src/auth-middleware.ts
+// for the cookie wire format. This store is concerned only with the
+// token <-> user_id mapping and TTL bookkeeping.
+
+import type { DB } from './db'
+import { randomBytes } from 'node:crypto'
+
+export const SESSION_TTL_MS = 90 * 24 * 60 * 60 * 1000 // 90 days
 
 export interface Session {
   token: string
-  userId: string
-  createdAt: string
+  user_id: string
+  created_at: number
+  last_accessed_at: number
 }
 
 export interface SessionsStore {
-  create(userId: string): Promise<Session>
-  get(token: string): Promise<Session | null>
-  delete(token: string): Promise<boolean>
+  create(userId: string): Session
+  resolve(token: string): Session | null
+  delete(token: string): void
 }
 
-function randHex(bytes: number): string {
-  const arr = new Uint8Array(bytes)
-  crypto.getRandomValues(arr)
-  return Array.from(arr).map((b) => b.toString(16).padStart(2, '0')).join('')
+interface SessionRow {
+  token: string
+  user_id: string
+  created_at: number
+  last_accessed_at: number
 }
 
-export function createSessionsStore(dataDir: string): SessionsStore {
-  const FILE = join(dataDir, 'sessions.json')
+function newToken(): string {
+  return randomBytes(32).toString('hex')
+}
 
-  let writeLock: Promise<unknown> = Promise.resolve()
-
-  function withLock<T>(fn: () => Promise<T>): Promise<T> {
-    const next = writeLock.then(fn, fn)
-    writeLock = next.catch(() => undefined)
-    return next
-  }
-
-  async function load(): Promise<Session[]> {
-    try {
-      const raw = await readFile(FILE, 'utf8')
-      const parsed = JSON.parse(raw) as Session[]
-      return Array.isArray(parsed) ? parsed : []
-    } catch {
-      return []
-    }
-  }
-
-  async function save(items: Session[]): Promise<void> {
-    await mkdir(dataDir, { recursive: true })
-    await writeFile(FILE, JSON.stringify(items, null, 2))
-  }
+export function createSessionsStore(db: DB, now: () => number = Date.now): SessionsStore {
+  const insert = db.query<SessionRow, [string, string, number, number]>(
+    `INSERT INTO sessions (token, user_id, created_at, last_accessed_at)
+     VALUES (?, ?, ?, ?) RETURNING *`,
+  )
+  const select = db.query<SessionRow, [string]>('SELECT * FROM sessions WHERE token = ?')
+  const touch = db.query<SessionRow, [number, string]>(
+    `UPDATE sessions SET last_accessed_at = ? WHERE token = ? RETURNING *`,
+  )
+  const removeStmt = db.prepare('DELETE FROM sessions WHERE token = ?')
 
   return {
-    async create(userId) {
-      return withLock(async () => {
-        const items = await load()
-        const session: Session = {
-          token: randHex(32),
-          userId,
-          createdAt: new Date().toISOString(),
-        }
-        items.push(session)
-        await save(items)
-        return session
-      })
+    create(userId: string): Session {
+      const ts = now()
+      const row = insert.get(newToken(), userId, ts, ts)
+      // RETURNING * always yields a row for INSERT — assert non-null.
+      return row as SessionRow
     },
 
-    async get(token) {
-      if (!token) return null
-      const items = await load()
-      return items.find((s) => s.token === token) ?? null
+    resolve(token: string): Session | null {
+      const row = select.get(token)
+      if (!row) return null
+      const ts = now()
+      if (ts - row.last_accessed_at > SESSION_TTL_MS) {
+        removeStmt.run(token)
+        return null
+      }
+      const refreshed = touch.get(ts, token)
+      return (refreshed ?? null) as Session | null
     },
 
-    async delete(token) {
-      return withLock(async () => {
-        const items = await load()
-        const idx = items.findIndex((s) => s.token === token)
-        if (idx < 0) return false
-        items.splice(idx, 1)
-        await save(items)
-        return true
-      })
+    delete(token: string): void {
+      removeStmt.run(token)
     },
   }
 }

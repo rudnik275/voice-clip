@@ -1,69 +1,108 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { createUsersStore, type UsersStore } from '../src/users-store'
+import { describe, expect, test, beforeEach } from 'bun:test'
+import { openDb } from '../src/db'
+import { createUsersStore, type User } from '../src/users-store'
 
-describe('users-store', () => {
-  let dir: string
-  let store: UsersStore
+describe('users-store (SQLite, get-or-create by google_sub)', () => {
+  let store: ReturnType<typeof createUsersStore>
 
-  beforeEach(async () => {
-    dir = await mkdtemp(join(tmpdir(), 'voice-clip-users-'))
-    store = createUsersStore(dir)
+  beforeEach(() => {
+    const db = openDb(':memory:')
+    store = createUsersStore(db)
   })
 
-  afterEach(async () => {
-    await rm(dir, { recursive: true, force: true })
+  test('upsertByGoogleSub creates a new user on first login', () => {
+    const u = store.upsertByGoogleSub({
+      sub: 'g-sub-1',
+      email: 'alice@example.com',
+      name: 'Alice',
+      picture_url: 'https://lh3/avatar.png',
+    })
+    expect(u.id).toBeString()
+    expect(u.id.length).toBeGreaterThan(0)
+    expect(u.google_sub).toBe('g-sub-1')
+    expect(u.email).toBe('alice@example.com')
+    expect(u.name).toBe('Alice')
+    expect(u.picture_url).toBe('https://lh3/avatar.png')
+    expect(u.created_at).toBeGreaterThan(0)
+    expect(u.updated_at).toBeGreaterThanOrEqual(u.created_at)
   })
 
-  test('list() empty initially', async () => {
-    expect(await store.list()).toEqual([])
+  test('upsertByGoogleSub returns the same user id on second login', () => {
+    const u1 = store.upsertByGoogleSub({
+      sub: 'g-sub-1',
+      email: 'alice@example.com',
+      name: 'Alice',
+      picture_url: 'https://lh3/avatar.png',
+    })
+    const u2 = store.upsertByGoogleSub({
+      sub: 'g-sub-1',
+      email: 'alice@example.com',
+      name: 'Alice',
+      picture_url: 'https://lh3/avatar.png',
+    })
+    expect(u2.id).toBe(u1.id)
+    expect(u2.created_at).toBe(u1.created_at)
   })
 
-  test('create() persists user with id, name, daemonToken, createdAt', async () => {
-    const u = await store.create({ name: 'dima' })
-    expect(u.id).toMatch(/^[a-f0-9]+$/)
-    expect(u.name).toBe('dima')
-    expect(u.daemonToken).toMatch(/^[a-f0-9]+$/)
-    expect(u.createdAt).toBeString()
-    const fresh = createUsersStore(dir)
-    expect(await fresh.list()).toEqual([u])
+  test('upsertByGoogleSub updates email/name/picture_url on each login', () => {
+    const u1 = store.upsertByGoogleSub({
+      sub: 'g-sub-1',
+      email: 'alice@example.com',
+      name: 'Alice Old',
+      picture_url: 'https://lh3/old.png',
+    })
+    const u2 = store.upsertByGoogleSub({
+      sub: 'g-sub-1',
+      email: 'alice.new@example.com',
+      name: 'Alice New',
+      picture_url: 'https://lh3/new.png',
+    })
+    expect(u2.id).toBe(u1.id)
+    expect(u2.email).toBe('alice.new@example.com')
+    expect(u2.name).toBe('Alice New')
+    expect(u2.picture_url).toBe('https://lh3/new.png')
+    expect(u2.updated_at).toBeGreaterThanOrEqual(u1.updated_at)
   })
 
-  test('get(), getByName(), getByDaemonToken() lookups', async () => {
-    const a = await store.create({ name: 'alice' })
-    const b = await store.create({ name: 'bob' })
-    expect(await store.get(a.id)).toEqual(a)
-    expect(await store.get('nope')).toBeNull()
-    expect(await store.getByName('bob')).toEqual(b)
-    expect(await store.getByName('zzz')).toBeNull()
-    expect(await store.getByDaemonToken(a.daemonToken)).toEqual(a)
-    expect(await store.getByDaemonToken('')).toBeNull()
-    expect(await store.getByDaemonToken('not-a-token')).toBeNull()
+  test('picture_url is optional (Google sometimes omits it)', () => {
+    const u = store.upsertByGoogleSub({
+      sub: 'g-sub-x',
+      email: 'noavatar@example.com',
+      name: 'No Avatar',
+    })
+    expect(u.picture_url).toBeNull()
   })
 
-  test('regenerateDaemonToken() rotates the token', async () => {
-    const u = await store.create({ name: 'rot' })
-    const oldToken = u.daemonToken
-    const updated = await store.regenerateDaemonToken(u.id)
-    expect(updated?.daemonToken).not.toBe(oldToken)
-    // Old token no longer resolves
-    expect(await store.getByDaemonToken(oldToken)).toBeNull()
-    expect(await store.getByDaemonToken(updated!.daemonToken)).toEqual(updated)
+  test('different google_sub → different user rows', () => {
+    const a = store.upsertByGoogleSub({ sub: 'g-sub-a', email: 'a@x.com', name: 'A' })
+    const b = store.upsertByGoogleSub({ sub: 'g-sub-b', email: 'b@x.com', name: 'B' })
+    expect(a.id).not.toBe(b.id)
   })
 
-  test('regenerateDaemonToken() returns null for missing user', async () => {
-    expect(await store.regenerateDaemonToken('nope')).toBeNull()
+  test('findById returns the user when present', () => {
+    const u = store.upsertByGoogleSub({ sub: 'g-sub-1', email: 'a@x.com', name: 'A' })
+    const got = store.findById(u.id)
+    expect(got).toMatchObject({ id: u.id, google_sub: 'g-sub-1', email: 'a@x.com' })
   })
 
-  test('parallel creates do not lose users', async () => {
-    const ops: Promise<unknown>[] = []
-    for (let i = 0; i < 10; i++) ops.push(store.create({ name: `u${i}` }))
-    await Promise.all(ops)
-    const list = await store.list()
-    expect(list).toHaveLength(10)
-    expect(new Set(list.map((u) => u.id)).size).toBe(10)
-    expect(new Set(list.map((u) => u.daemonToken)).size).toBe(10)
+  test('findById returns null for an unknown id', () => {
+    expect(store.findById('does-not-exist')).toBeNull()
+  })
+
+  test('User type is exported and shaped as expected', () => {
+    const u: User = store.upsertByGoogleSub({ sub: 'g-sub-1', email: 'a@x.com', name: 'A' })
+    // Compile-time + runtime check.
+    expect(typeof u.id).toBe('string')
+    expect(typeof u.email).toBe('string')
+    expect(typeof u.name).toBe('string')
+  })
+
+  test('accepts an injectable `now` clock for deterministic timestamps', () => {
+    const db = openDb(':memory:')
+    const fixed = 1_700_000_000_000
+    const s = createUsersStore(db, () => fixed)
+    const u = s.upsertByGoogleSub({ sub: 'g-sub-1', email: 'a@x.com', name: 'A' })
+    expect(u.created_at).toBe(fixed)
+    expect(u.updated_at).toBe(fixed)
   })
 })

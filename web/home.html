@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#07070b" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <title>voice-clip</title>
+    <link rel="stylesheet" href="/style.css" />
+    <style>
+      .home-wrap {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100dvh;
+        gap: 28px;
+        padding: 24px;
+        text-align: center;
+      }
+      .home-greeting {
+        margin: 0;
+        font-size: 36px;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+        background: linear-gradient(135deg, var(--accent-a), var(--accent-b));
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+      .home-sub {
+        margin: 0;
+        color: var(--muted);
+        font-size: 14px;
+        max-width: 32ch;
+      }
+      .home-actions {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        justify-content: center;
+        margin-top: 6px;
+      }
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        padding: 10px 18px;
+        border: 1px solid var(--glass-border-strong);
+        border-radius: 999px;
+        background: var(--glass-bg-hover);
+        color: var(--fg);
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        text-decoration: none;
+        transition: background 0.18s ease;
+        font-family: inherit;
+      }
+      .btn:hover {
+        background: rgba(255, 255, 255, 0.10);
+      }
+      .footer-version {
+        position: fixed;
+        bottom: max(env(safe-area-inset-bottom), 12px);
+        right: 14px;
+        font-size: 11px;
+        color: var(--muted);
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        font-variant-numeric: tabular-nums;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="home-wrap">
+      <h1 class="home-greeting">Hello, __NAME__</h1>
+      <p class="home-sub">
+        Foundation slice — recording UI lands in the next deploy.
+      </p>
+      <div class="home-actions">
+        <button class="btn" id="logout-btn" type="button">Sign out</button>
+      </div>
+    </div>
+    <div class="footer-version">__APP_VERSION__</div>
+    <script>
+      document.getElementById('logout-btn')?.addEventListener('click', async () => {
+        try {
+          await fetch('/logout', { method: 'POST', credentials: 'include' })
+        } finally {
+          window.location.href = '/'
+        }
+      })
+    </script>
+  </body>
+</html>

@@ -1,99 +1,93 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+// User row store: get-or-create on google_sub.
+//
+// The OAuth callback calls `upsertByGoogleSub` after Google returns a verified
+// id_token. We use `google_sub` (the Google account's stable subject id) as
+// the immutable join key — email/name/picture can change but sub is forever.
+// On every login we refresh the mutable fields so the UI stays current.
+
+import type { DB } from './db'
+import { randomBytes } from 'node:crypto'
 
 export interface User {
   id: string
+  google_sub: string
+  email: string
   name: string
-  createdAt: string
-  daemonToken: string
+  picture_url: string | null
+  created_at: number
+  updated_at: number
+}
+
+export interface UpsertInput {
+  sub: string
+  email: string
+  name: string
+  picture_url?: string | null
 }
 
 export interface UsersStore {
-  list(): Promise<User[]>
-  get(id: string): Promise<User | null>
-  getByName(name: string): Promise<User | null>
-  getByDaemonToken(token: string): Promise<User | null>
-  create(input: { name: string }): Promise<User>
-  regenerateDaemonToken(id: string): Promise<User | null>
+  upsertByGoogleSub(input: UpsertInput): User
+  findById(id: string): User | null
 }
 
-function randHex(bytes: number): string {
-  const arr = new Uint8Array(bytes)
-  crypto.getRandomValues(arr)
-  return Array.from(arr).map((b) => b.toString(16).padStart(2, '0')).join('')
+function newUserId(): string {
+  return `u_${randomBytes(12).toString('hex')}`
 }
 
-export function createUsersStore(dataDir: string): UsersStore {
-  const FILE = join(dataDir, 'users.json')
+interface UserRow {
+  id: string
+  google_sub: string
+  email: string
+  name: string
+  picture_url: string | null
+  created_at: number
+  updated_at: number
+}
 
-  let writeLock: Promise<unknown> = Promise.resolve()
-
-  function withLock<T>(fn: () => Promise<T>): Promise<T> {
-    const next = writeLock.then(fn, fn)
-    writeLock = next.catch(() => undefined)
-    return next
+function rowToUser(row: UserRow): User {
+  return {
+    id: row.id,
+    google_sub: row.google_sub,
+    email: row.email,
+    name: row.name,
+    picture_url: row.picture_url,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
   }
+}
 
-  async function load(): Promise<User[]> {
-    try {
-      const raw = await readFile(FILE, 'utf8')
-      const parsed = JSON.parse(raw) as User[]
-      return Array.isArray(parsed) ? parsed : []
-    } catch {
-      return []
-    }
-  }
-
-  async function save(items: User[]): Promise<void> {
-    await mkdir(dataDir, { recursive: true })
-    await writeFile(FILE, JSON.stringify(items, null, 2))
-  }
+export function createUsersStore(db: DB, now: () => number = Date.now): UsersStore {
+  const selectBySub = db.query<UserRow, [string]>('SELECT * FROM users WHERE google_sub = ?')
+  const selectById = db.query<UserRow, [string]>('SELECT * FROM users WHERE id = ?')
+  const insertUser = db.query<
+    UserRow,
+    [string, string, string, string, string | null, number, number]
+  >(
+    `INSERT INTO users (id, google_sub, email, name, picture_url, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+  )
+  const updateUser = db.query<UserRow, [string, string, string | null, number, string]>(
+    `UPDATE users SET email = ?, name = ?, picture_url = ?, updated_at = ?
+     WHERE google_sub = ? RETURNING *`,
+  )
 
   return {
-    async list() {
-      return load()
+    upsertByGoogleSub(input: UpsertInput): User {
+      const existing = selectBySub.get(input.sub)
+      const ts = now()
+      const picture = input.picture_url ?? null
+      if (existing) {
+        const updated = updateUser.get(input.email, input.name, picture, ts, input.sub)
+        // updated is non-null because the row exists; non-null assertion is safe.
+        return rowToUser(updated as UserRow)
+      }
+      const inserted = insertUser.get(newUserId(), input.sub, input.email, input.name, picture, ts, ts)
+      return rowToUser(inserted as UserRow)
     },
 
-    async get(id) {
-      const items = await load()
-      return items.find((u) => u.id === id) ?? null
-    },
-
-    async getByName(name) {
-      const items = await load()
-      return items.find((u) => u.name === name) ?? null
-    },
-
-    async getByDaemonToken(token) {
-      if (!token) return null
-      const items = await load()
-      return items.find((u) => u.daemonToken === token) ?? null
-    },
-
-    async create(input) {
-      return withLock(async () => {
-        const items = await load()
-        const user: User = {
-          id: randHex(8),
-          name: input.name,
-          createdAt: new Date().toISOString(),
-          daemonToken: randHex(24),
-        }
-        items.push(user)
-        await save(items)
-        return user
-      })
-    },
-
-    async regenerateDaemonToken(id) {
-      return withLock(async () => {
-        const items = await load()
-        const u = items.find((x) => x.id === id)
-        if (!u) return null
-        u.daemonToken = randHex(24)
-        await save(items)
-        return u
-      })
+    findById(id: string): User | null {
+      const row = selectById.get(id)
+      return row ? rowToUser(row) : null
     },
   }
 }

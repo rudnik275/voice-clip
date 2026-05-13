@@ -1,20 +1,28 @@
+// Server config — fail-fast at startup if any required env var is missing.
+// Tests bypass this by passing explicit deps into startServer().
+
 function requireEnv(name: string): string {
   const value = process.env[name]
   if (!value) throw new Error(`Missing required environment variable: ${name}`)
   return value
 }
 
+function parseAllowlist(raw: string | undefined): string[] {
+  if (!raw) return []
+  return raw
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter((s) => s.length > 0)
+}
+
 export const config = {
   openaiApiKey: requireEnv('OPENAI_API_KEY'),
-  port: Number(process.env.PORT ?? 8443),
-  certPath: process.env.TLS_CERT_PATH ?? './certs/cert.pem',
-  keyPath: process.env.TLS_KEY_PATH ?? './certs/key.pem',
+  googleClientId: requireEnv('GOOGLE_OAUTH_CLIENT_ID'),
+  googleClientSecret: requireEnv('GOOGLE_OAUTH_CLIENT_SECRET'),
+  publicUrl: requireEnv('PUBLIC_URL'),
+  allowedEmails: parseAllowlist(requireEnv('VOICE_CLIP_ALLOWED_EMAILS')),
+  port: Number(process.env.PORT ?? 8080),
   dataDir: process.env.DATA_DIR ?? './data',
-  // Container deployments terminate TLS at Tailscale Funnel and serve plain HTTP.
-  useTls: process.env.USE_TLS !== 'false',
-  // Required to invite-create new users via /admin/invites.
-  adminToken: process.env.ADMIN_TOKEN ?? '',
-  // Public origin (e.g. https://nas-rudnik.tail-XXXX.ts.net) — embedded in the
-  // daemon installer so it knows where to connect.
-  publicUrl: process.env.PUBLIC_URL ?? '',
+  // TLS terminates at Cloudflare Tunnel; container always serves plain HTTP.
+  useTls: false,
 }
