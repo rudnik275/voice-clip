@@ -87,7 +87,15 @@ function escapeHtml(s: string): string {
 
 export async function startServer(deps: ServerDeps): Promise<RunningServer> {
   const useTls = deps.useTls ?? false
-  const cookieSecure = useTls // tests run plain HTTP; prod runs behind CF Tunnel
+  // Cookies must carry the `Secure` flag whenever the BROWSER-facing scheme
+  // is https — regardless of whether Bun itself is using TLS. In prod the
+  // Cloudflare Tunnel terminates TLS at the edge and forwards plain HTTP
+  // to Bun (useTls=false), but the public URL is https — so cookies need
+  // Secure. In local dev publicUrl is http://localhost so we omit Secure
+  // (browsers reject Secure cookies over plain HTTP).
+  const cookieSecure = deps.publicUrl
+    ? new URL(deps.publicUrl).protocol === 'https:'
+    : useTls
   const allowlist = asAllowlist(deps.allowlist)
 
   const db = deps.db ?? openDb(join(deps.dataDir, 'voice-clip.sqlite'))
