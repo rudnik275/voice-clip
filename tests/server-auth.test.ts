@@ -251,3 +251,78 @@ describe('server: end-to-end Google OAuth + sessions + /me', () => {
     }
   })
 })
+
+describe('server: cookieSecure derives from publicUrl scheme, not useTls', () => {
+  // Production topology: Cloudflare Tunnel terminates TLS at the edge and
+  // forwards plain HTTP to Bun. useTls=false in prod, but cookies MUST still
+  // carry the Secure flag because the browser-facing scheme is https.
+  let dir: string
+  let server: Awaited<ReturnType<typeof startServer>>
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'voice-clip-cookie-secure-'))
+  })
+
+  afterEach(async () => {
+    if (server) server.stop()
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  test('publicUrl=https:// → Set-Cookie has Secure flag (prod behind Cloudflare Tunnel)', async () => {
+    server = await startServer({
+      dataDir: dir,
+      port: 0,
+      useTls: false,
+      publicUrl: 'https://voice.example.com',
+      googleClientId: CLIENT_ID,
+      googleClientSecret: CLIENT_SECRET,
+      googleFetcher: makeGoogleFetcher({ sub: 'g1', email: 'alice@example.com', name: 'Alice' }),
+      allowlist: ['alice@example.com'],
+    })
+    const r = await fetch(`http://localhost:${server.port}/auth/google/start`, { redirect: 'manual' })
+    const oauthState = r.headers.getSetCookie().find((c) => c.startsWith('oauth_state='))
+    expect(oauthState).toBeDefined()
+    expect(oauthState).toContain('Secure')
+  })
+
+  test('publicUrl=http:// → Set-Cookie omits Secure flag (local dev)', async () => {
+    server = await startServer({
+      dataDir: dir,
+      port: 0,
+      useTls: false,
+      publicUrl: 'http://localhost:8080',
+      googleClientId: CLIENT_ID,
+      googleClientSecret: CLIENT_SECRET,
+      googleFetcher: makeGoogleFetcher({ sub: 'g1', email: 'alice@example.com', name: 'Alice' }),
+      allowlist: ['alice@example.com'],
+    })
+    const r = await fetch(`http://localhost:${server.port}/auth/google/start`, { redirect: 'manual' })
+    const oauthState = r.headers.getSetCookie().find((c) => c.startsWith('oauth_state='))
+    expect(oauthState).toBeDefined()
+    expect(oauthState).not.toContain('Secure')
+  })
+
+  test('session cookie also carries Secure when publicUrl=https', async () => {
+    server = await startServer({
+      dataDir: dir,
+      port: 0,
+      useTls: false,
+      publicUrl: 'https://voice.example.com',
+      googleClientId: CLIENT_ID,
+      googleClientSecret: CLIENT_SECRET,
+      googleFetcher: makeGoogleFetcher({ sub: 'g1', email: 'alice@example.com', name: 'Alice' }),
+      allowlist: ['alice@example.com'],
+    })
+    const baseUrl = `http://localhost:${server.port}`
+    const startR = await fetch(`${baseUrl}/auth/google/start`, { redirect: 'manual' })
+    const stateRaw = startR.headers.getSetCookie().find((c) => c.startsWith('oauth_state='))!
+    const state = stateRaw.split(';')[0]!.split('=')[1]!
+    const cbR = await fetch(`${baseUrl}/auth/google/callback?code=fake&state=${state}`, {
+      headers: { cookie: `oauth_state=${state}` },
+      redirect: 'manual',
+    })
+    const sessionCookie = cbR.headers.getSetCookie().find((c) => c.startsWith('session='))
+    expect(sessionCookie).toBeDefined()
+    expect(sessionCookie).toContain('Secure')
+  })
+})
