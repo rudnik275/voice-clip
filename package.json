@@ -10,7 +10,8 @@
     "typecheck": "bun x tsc --noEmit"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "typescript": "^5.9.3"
   },
   "dependencies": {
     "openai": "^6.37.0"
