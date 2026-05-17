@@ -19,6 +19,8 @@
     "core:menu:allow-popup",
     "deep-link:default",
     "updater:default",
+    "updater:allow-check",
+    "updater:allow-download-and-install",
     "opener:default",
     "opener:allow-open-url",
     "autostart:default",

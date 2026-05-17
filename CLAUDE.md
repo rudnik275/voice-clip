@@ -289,6 +289,8 @@ That rsyncs sources to the NAS, scp's the local `.env` (gitignored, AI-blocked),
 
 **Litestream / DB backup + restore:** a `voice-clip-litestream` sidecar in `docker-compose.prod.yml` continuously replicates `voice-clip.sqlite` to Hetzner Object Storage (7-day WAL retention, 24h snapshots). Config is `litestream.yml` at repo root. Credentials come from four `LITESTREAM_S3_*` env vars (see `.env.example`). Full restore procedure: `docs/runbook/litestream-restore.md` — run `scripts/litestream-restore.sh` on the VPS with the app container stopped.
 
+**macOS app auto-updater (Tauri Ed25519):** releases are triggered by a `desktop-v*` tag. The CI workflow (`.github/workflows/tauri-release.yml`) builds a universal `.dmg`, signs `latest.json` with the Ed25519 key from GH secrets, and publishes both to GitHub Releases. The Tauri app checks `https://voice.rudifamily.uk/desktop/update.json` (a thin server 302 → GitHub Releases). One-time owner setup: `docs/runbook/desktop-updater-setup.md`.
+
 ## Deployment runbook — full re-deploy from zero
 
 If the NAS dies or you start over on a different host, this is the recipe. Every step is reversible/idempotent.

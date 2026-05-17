@@ -152,4 +152,13 @@ describe('desktop pairing handshake + /download/latest', () => {
       'https://github.com/rudnik275/voice-clip/releases/latest/download/voice-clip.dmg',
     )
   })
+
+  test('GET /desktop/update.json (unauthenticated) → 302 to latest.json', async () => {
+    await start({ sub: 'g1', email: 'alice@example.com', name: 'Alice' })
+    const r = await fetch(`${baseUrl}/desktop/update.json`, { redirect: 'manual' })
+    expect(r.status).toBe(302)
+    expect(r.headers.get('location')).toBe(
+      'https://github.com/rudnik275/voice-clip/releases/latest/download/latest.json',
+    )
+  })
 })

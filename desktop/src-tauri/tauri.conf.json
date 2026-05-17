@@ -40,7 +40,7 @@
       "dialog": true,
       "pubkey": "REPLACE_WITH_ED25519_PUBLIC_KEY",
       "endpoints": [
-        "https://github.com/rudnik275/voice-clip/releases/latest/download/latest.json"
+        "https://voice.rudifamily.uk/desktop/update.json"
       ]
     }
   }
