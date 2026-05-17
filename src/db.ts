@@ -75,6 +75,25 @@ const SCHEMA_SQL = `
 
   CREATE INDEX IF NOT EXISTS idx_devices_user_id ON devices(user_id);
   CREATE INDEX IF NOT EXISTS idx_devices_token ON devices(device_token);
+
+  -- Server-side replay queue for offline Macs. When a phone uploads a clip
+  -- but a paired device has no live SSE stream, /upload inserts a row here.
+  -- On the device's next /events connect we flush its pending rows (seq ASC)
+  -- into the stream before subscribing to live frames; /events/ack {seq}
+  -- deletes the matching row. UNIQUE(device_id, seq) makes enqueue idempotent
+  -- under at-least-once fan-out. Cascades on device (and transitively user)
+  -- delete so a revoked Mac never leaves an orphan queue.
+  CREATE TABLE IF NOT EXISTS pending_deliveries (
+    id          TEXT PRIMARY KEY,
+    device_id   TEXT NOT NULL,
+    seq         INTEGER NOT NULL,
+    created_at  INTEGER NOT NULL,
+    FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE,
+    UNIQUE(device_id, seq)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_pending_deliveries_device_seq
+    ON pending_deliveries(device_id, seq);
 `
 
 export function openDb(path: string): DB {
