@@ -74,6 +74,12 @@ export interface ServerDeps {
 const LATEST_DMG_URL =
   'https://github.com/rudnik275/voice-clip/releases/latest/download/voice-clip.dmg'
 
+// The Tauri updater manifest published by tauri-release CI to each GitHub
+// Release. The Tauri app points at /desktop/update.json on our server which
+// 302s here — so the URL in tauri.conf.json never needs to change.
+const LATEST_UPDATE_MANIFEST_URL =
+  'https://github.com/rudnik275/voice-clip/releases/latest/download/latest.json'
+
 export interface RunningServer {
   port: number
   stop(): void
@@ -479,6 +485,16 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
       if (pathname === '/download/latest') {
         if (method !== 'GET') return new Response('Method Not Allowed', { status: 405 })
         return new Response(null, { status: 302, headers: { location: LATEST_DMG_URL } })
+      }
+
+      // ---- /desktop/update.json ----
+      // Tauri auto-updater endpoint (unauthenticated). 302s to the signed
+      // latest.json manifest published by tauri-release CI to GitHub Releases.
+      // The Tauri app's tauri.conf.json points at this URL so the endpoint
+      // address is stable across releases; only the GH Releases asset changes.
+      if (pathname === '/desktop/update.json') {
+        if (method !== 'GET') return new Response('Method Not Allowed', { status: 405 })
+        return new Response(null, { status: 302, headers: { location: LATEST_UPDATE_MANIFEST_URL } })
       }
 
       // ---- /desktop/auth/start ----

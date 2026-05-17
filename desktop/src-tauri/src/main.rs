@@ -28,6 +28,7 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_deep_link::DeepLinkExt;
+use tauri_plugin_updater::UpdaterExt;
 
 use sse::{ConnStatus, SseClient};
 
@@ -356,8 +357,30 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                     show_settings_window(app);
                 }
                 "check-updates" => {
-                    // Placeholder — real updater is issue #9.
-                    eprintln!("check-updates: not yet implemented (see issue #9)");
+                    let handle = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        match handle.updater() {
+                            Ok(updater) => match updater.check().await {
+                                Ok(Some(update)) => {
+                                    if let Err(e) = update
+                                        .download_and_install(|_chunk, _total| {}, || {})
+                                        .await
+                                    {
+                                        eprintln!("check-updates: install error: {e}");
+                                    }
+                                }
+                                Ok(None) => {
+                                    eprintln!("check-updates: already up to date");
+                                }
+                                Err(e) => {
+                                    eprintln!("check-updates: check error: {e}");
+                                }
+                            },
+                            Err(e) => {
+                                eprintln!("check-updates: updater error: {e}");
+                            }
+                        }
+                    });
                 }
                 "logout" => {
                     let state = app.state::<AppState>();
