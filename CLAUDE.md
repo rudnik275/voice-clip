@@ -287,6 +287,8 @@ That rsyncs sources to the NAS, scp's the local `.env` (gitignored, AI-blocked),
 
 **Version visibility:** the version string (`v7`, `v8`, …) is shown to the user in three places — bottom-right corner of the live UI (`#version-tag`), inside the `#boot-fallback` panel, and on `/offline`. There's also a plain-text `/version` endpoint. When bumping the SW cache, update **all four** spots: `web/sw.js` (`CACHE = 'voice-clip-vN'`), `web/index.html` (`#version-tag` and the `.version` span in `#boot-fallback`), `web/offline.html` (the `.version` span), and `src/server.ts` (the `APP_VERSION` constant). A test in `tests/pwa-shell.test.ts` enforces that they all match.
 
+**Litestream / DB backup + restore:** a `voice-clip-litestream` sidecar in `docker-compose.prod.yml` continuously replicates `voice-clip.sqlite` to Hetzner Object Storage (7-day WAL retention, 24h snapshots). Config is `litestream.yml` at repo root. Credentials come from four `LITESTREAM_S3_*` env vars (see `.env.example`). Full restore procedure: `docs/runbook/litestream-restore.md` — run `scripts/litestream-restore.sh` on the VPS with the app container stopped.
+
 ## Deployment runbook — full re-deploy from zero
 
 If the NAS dies or you start over on a different host, this is the recipe. Every step is reversible/idempotent.
