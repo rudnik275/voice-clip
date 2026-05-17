@@ -121,7 +121,26 @@ read -rp "Press Enter once the package is Public (or already was)… " _
 
 # ─── 4. VPS prep ────────────────────────────────────────────────────────────
 say "Preparing VPS"
-ssh "${SSH_OPTS[@]}" "${T}" "mkdir -p '${REMOTE_DIR}/data' && (docker network inspect infra-net >/dev/null 2>&1 || docker network create infra-net)"
+rc=0
+ssh "${SSH_OPTS[@]}" "${T}" "bash -s -- '${REMOTE_DIR}'" <<'REMOTE' || rc=$?
+set -e
+RD="$1"
+if mkdir -p "$RD/data" 2>/dev/null; then
+  :                                           # deploy already owns the dir
+elif sudo -n install -d -o "$(id -un)" -g "$(id -gn)" "$RD" "$RD/data" 2>/dev/null; then
+  :                                           # passwordless sudo did it
+else
+  exit 42                                     # needs a one-time root action
+fi
+docker network inspect infra-net >/dev/null 2>&1 || docker network create infra-net >/dev/null
+REMOTE
+if [ "$rc" -eq 42 ]; then
+  die "can't create ${REMOTE_DIR} as ${SSH_USER} (no write on /opt, no passwordless sudo).
+  Run this ONCE (it'll ask for the sudo password — type it, it never reaches me), then re-run me:
+
+    ssh -t ${T} \"sudo install -d -o ${SSH_USER} -g ${SSH_USER} ${REMOTE_DIR} ${REMOTE_DIR}/data\""
+fi
+[ "$rc" -eq 0 ] || die "VPS prep failed (rc=${rc})"
 ok "data dir + infra-net ready"
 
 # ─── 5. Ship .env + compose (scp; contents never printed) ──────────────────
