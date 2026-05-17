@@ -11,6 +11,8 @@
 
 set -euo pipefail
 
+cd "$(dirname "$0")/.."   # repo root — need local compose + litestream.yml to ship
+
 SSH_USER="${SSH_USER:-deploy}"
 REMOTE_DIR="${REMOTE_DIR:-/opt/voice-clip}"
 PUBLIC_URL="https://${PUBLIC_HOST:-voice.rudifamily.uk}"
@@ -19,6 +21,9 @@ SSH_HOST="${1:-${SSH_HOST:-}}"
 [ -z "${SSH_HOST}" ] && read -rp "VPS host/IP: " SSH_HOST
 [ -n "${SSH_HOST}" ] || { echo "✗ no VPS host" >&2; exit 1; }
 T="${SSH_USER}@${SSH_HOST}"
+
+echo "▸ Syncing compose + litestream.yml to ${REMOTE_DIR}"
+scp -q -o ConnectTimeout=10 docker-compose.prod.yml litestream.yml "${T}:${REMOTE_DIR}/"
 
 echo "▸ Rolling ${REMOTE_DIR} on ${T}"
 ssh -o ConnectTimeout=10 "${T}" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.prod.yml pull && docker compose -f docker-compose.prod.yml up -d"
