@@ -22,6 +22,10 @@ import { createSessionsStore, type SessionsStore } from './sessions-store'
 import { createHistoryStore, type HistoryStore } from './history-store'
 import { createCostStore, type CostStore } from './cost-store'
 import { createDevicesStore, type DevicesStore } from './devices-store'
+import {
+  createPendingDeliveriesStore,
+  type PendingDeliveriesStore,
+} from './pending-deliveries-store'
 import { createLiveBus, type LiveBus } from './live-bus'
 import type { TranscriptionResult } from './transcribe'
 import { calcCostUsd } from './pricing'
@@ -57,6 +61,7 @@ export interface ServerDeps {
   history?: HistoryStore
   costs?: CostStore
   devices?: DevicesStore
+  pendingDeliveries?: PendingDeliveriesStore
   liveBus?: LiveBus
   transcribe?: (input: Uint8Array, filename: string) => Promise<TranscriptionResult>
   db?: DB
@@ -122,6 +127,8 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
   const history = deps.history ?? createHistoryStore(db, deps.now)
   const costs = deps.costs ?? createCostStore(db)
   const devices = deps.devices ?? createDevicesStore(db, deps.now)
+  const pendingDeliveries =
+    deps.pendingDeliveries ?? createPendingDeliveriesStore(db, deps.now)
   const liveBus = deps.liveBus ?? createLiveBus()
   // The real transcriber pulls in `./config` (which fail-fasts on missing
   // OPENAI_API_KEY) and the OpenAI client. Load it lazily and ONLY when no
@@ -298,9 +305,11 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
         })
         if (costUsd > 0) costs.add(authed.user.id, costUsd)
 
-        // Fan-out: push the clip to every currently-connected Mac for this
-        // user. Offline Macs simply miss it (pending-clip replay is a later
-        // slice). publish() is a no-op for devices with no live SSE stream.
+        // Fan-out: push the clip to every paired Mac for this user. A Mac
+        // with a live SSE stream gets it instantly; one that is offline gets
+        // a pending_deliveries row so it replays the clip on its next
+        // /events connect (publish() returns false when there is no live
+        // subscriber).
         const clipPayload = {
           seq: clip.seq,
           text: clip.text,
@@ -309,7 +318,8 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
           costUsd,
         }
         for (const d of devices.list(authed.user.id)) {
-          liveBus.publish(d.id, clipPayload)
+          const live = liveBus.publish(d.id, clipPayload)
+          if (!live) pendingDeliveries.enqueue(d.id, clip.seq)
         }
 
         return Response.json({
@@ -516,12 +526,36 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
         if (!device) return unauthorized()
         devices.touch(device.id)
 
+        const enc = new TextEncoder()
         const stream = new ReadableStream<Uint8Array>({
           start(controller) {
-            liveBus.subscribe(device.id, controller)
             // Prelude comment so proxies flush headers and the client sees
             // the connection is live immediately.
-            controller.enqueue(new TextEncoder().encode(': connected\n\n'))
+            controller.enqueue(enc.encode(': connected\n\n'))
+
+            // Replay anything queued while this Mac was offline, oldest-first
+            // (seq ASC), BEFORE subscribing to the live bus — so a clip the
+            // phone uploads mid-flush can never interleave ahead of the
+            // backlog. Each replayed frame uses the SAME payload shape as the
+            // /upload fan-out so the Mac handles them identically.
+            const queued = pendingDeliveries.listByDevice(device.id)
+            if (queued.length > 0) {
+              const seqs = new Set(queued.map((q) => q.seq))
+              const minSeq = queued[0]!.seq
+              for (const clip of history.listSince(device.user_id, minSeq - 1)) {
+                if (!seqs.has(clip.seq)) continue
+                const payload = {
+                  seq: clip.seq,
+                  text: clip.text,
+                  recordedAt: clip.recordedAt,
+                  source: clip.source,
+                  costUsd: clip.costUsd,
+                }
+                controller.enqueue(enc.encode(`data: ${JSON.stringify(payload)}\n\n`))
+              }
+            }
+
+            liveBus.subscribe(device.id, controller)
           },
           cancel() {
             liveBus.unsubscribe(device.id)
@@ -538,19 +572,26 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
       }
 
       // ---- /events/ack (device-token auth) ----
-      // The Mac app POSTs { seq } after a successful pbcopy. We use it to
-      // bump last_seen_at (delivery liveness). Pending-clip replay is a
-      // later slice, so the seq is only recorded as "device is alive" here.
+      // The Mac app POSTs { seq } after a successful pbcopy. The seq deletes
+      // the matching pending_deliveries row so the clip is not replayed on
+      // the next reconnect. The body is optional/best-effort — a missing or
+      // malformed body still acks liveness (bumps last_seen_at) and never
+      // 500s.
       if (pathname === '/events/ack') {
         if (method !== 'POST') return new Response('Method Not Allowed', { status: 405 })
         const device = resolveDeviceFromRequest(req, devices)
         if (!device) return unauthorized()
-        // Body is optional/best-effort — a malformed body still acks liveness.
+        let parsed: unknown
         try {
-          await req.json()
+          parsed = await req.json()
         } catch {
           // ignore — liveness ack does not depend on the body
         }
+        const seq =
+          parsed && typeof parsed === 'object' && typeof (parsed as { seq?: unknown }).seq === 'number'
+            ? (parsed as { seq: number }).seq
+            : undefined
+        if (seq !== undefined) pendingDeliveries.deleteBySeq(device.id, seq)
         devices.touch(device.id)
         return Response.json({ ok: true })
       }
