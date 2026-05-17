@@ -1,0 +1,10 @@
+dbs:
+  - path: /data/voice-clip.sqlite
+    replicas:
+      - type: s3
+        bucket: ${LITESTREAM_S3_BUCKET}
+        path: voice-clip/voice-clip.sqlite
+        endpoint: ${LITESTREAM_S3_ENDPOINT}
+        force-path-style: true
+        retention: 168h          # 7-day WAL retention
+        snapshot-interval: 24h   # snapshot once per day
