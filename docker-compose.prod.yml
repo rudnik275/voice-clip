@@ -15,6 +15,11 @@ services:
     volumes:
       # SQLite db + WAL + per-user state live here. Persists across image rolls.
       - ./data:/data
+    labels:
+      # Opt this container into the shared Watchtower (infra-net singleton,
+      # WATCHTOWER_LABEL_ENABLE=true, 6h poll). CI pushes a fresh
+      # ghcr.io/rudnik275/voice-clip:latest → Watchtower auto-rolls it.
+      - "com.centurylinklabs.watchtower.enable=true"
     networks:
       - infra-net
     healthcheck:
