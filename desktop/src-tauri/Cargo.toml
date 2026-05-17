@@ -1,0 +1,33 @@
+[package]
+name = "voice-clip-desktop"
+version = "0.1.0"
+description = "Voice Clip — macOS clipboard receiver"
+authors = ["Dmitriy Rudnik"]
+edition = "2021"
+rust-version = "1.77"
+
+# macOS-desktop-only app → a single binary crate (no mobile lib split).
+
+[[bin]]
+name = "voice-clip-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-deep-link = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Blocking reqwest: the SSE read loop runs on its own std thread so a
+# long-lived stream never blocks the Tauri event loop.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+keyring = "3"
+rand = "0.8"
+
+[features]
+# this feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
+custom-protocol = ["tauri/custom-protocol"]

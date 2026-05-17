@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Registers the voiceclip:// URL scheme so the OS routes the OAuth
+       deep-link callback to this app. Tauri merges this into the generated
+       Info.plist at bundle time. -->
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>
+      <string>com.voiceclip.desktop</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>voiceclip</string>
+      </array>
+    </dict>
+  </array>
+  <!-- Background clipboard receiver: no Dock icon, no menu bar. The window
+       is opened explicitly from main.rs only while pairing / showing state. -->
+  <key>LSUIElement</key>
+  <false/>
+</dict>
+</plist>

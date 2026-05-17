@@ -27,5 +27,5 @@
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
   },
-  "exclude": ["node_modules", "web"]
+  "exclude": ["node_modules", "web", "desktop"]
 }
