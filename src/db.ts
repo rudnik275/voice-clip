@@ -34,6 +34,30 @@ const SCHEMA_SQL = `
   );
 
   CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+
+  -- Per-user transcription history. seq is a single GLOBAL autoincrement
+  -- (monotonic across all users, never reused) so daemon replay can do an
+  -- indexed "seq > X for user Y" range scan.
+  CREATE TABLE IF NOT EXISTS history (
+    seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      TEXT NOT NULL,
+    text         TEXT NOT NULL,
+    source       TEXT NOT NULL,
+    recorded_at  TEXT NOT NULL,
+    cost_usd     REAL NOT NULL,
+    ts           INTEGER NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_history_user_seq ON history(user_id, seq);
+
+  -- Cumulative spend. One row per user_id; the aggregate (all-users) total
+  -- lives in a reserved sentinel row keyed '__aggregate__'. A user id can
+  -- never collide with the sentinel because user ids are 'u_<hex>'.
+  CREATE TABLE IF NOT EXISTS costs (
+    user_id   TEXT PRIMARY KEY,
+    total_usd REAL NOT NULL
+  );
 `
 
 export function openDb(path: string): DB {
