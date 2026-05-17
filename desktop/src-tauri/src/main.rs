@@ -23,7 +23,10 @@ mod sse;
 use std::sync::Mutex;
 
 use serde::Serialize;
-use tauri::{Emitter, Manager, State};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_deep_link::DeepLinkExt;
 
 use sse::{ConnStatus, SseClient};
@@ -44,6 +47,10 @@ struct AppState {
     pending_state: Mutex<Option<String>>,
     /// Live SSE worker; present only while SignedIn.
     sse: Mutex<Option<SseClient>>,
+    /// Last clip text (truncated) for the tray menu preview item.
+    last_clip: Mutex<Option<String>>,
+    /// Current connection status for tray icon state.
+    conn_status: Mutex<ConnStatus>,
 }
 
 #[derive(Clone, Serialize)]
@@ -63,6 +70,42 @@ fn status_str(s: ConnStatus) -> &'static str {
         ConnStatus::Connected => "connected",
         ConnStatus::Reconnecting => "reconnecting",
         ConnStatus::Offline => "offline",
+    }
+}
+
+/// Status-aware tray title (shown next to the icon on macOS).
+fn tray_title(s: ConnStatus) -> &'static str {
+    match s {
+        ConnStatus::Connected => "●",
+        ConnStatus::Connecting | ConnStatus::Reconnecting => "◌",
+        ConnStatus::Offline => "○",
+    }
+}
+
+/// Update the tray icon title and tooltip to reflect the current connection state.
+fn update_tray(app: &tauri::AppHandle, status: ConnStatus) {
+    if let Some(tray) = app.tray_by_id("main") {
+        let _ = tray.set_title(Some(tray_title(status)));
+        let tooltip = match status {
+            ConnStatus::Connected => "Voice Clip — Connected",
+            ConnStatus::Connecting => "Voice Clip — Connecting…",
+            ConnStatus::Reconnecting => "Voice Clip — Reconnecting…",
+            ConnStatus::Offline => "Voice Clip — Offline",
+        };
+        let _ = tray.set_tooltip(Some(tooltip));
+    }
+}
+
+/// Update the "last clip" item in the tray menu.
+fn update_tray_clip(app: &tauri::AppHandle, preview: &str) {
+    if let Some(item) = app.menu_item("last-clip") {
+        let truncated: String = if preview.len() > 60 {
+            let s: String = preview.chars().take(57).collect();
+            format!("{s}…")
+        } else {
+            preview.to_string()
+        };
+        let _ = item.as_menuitem().map(|m| m.set_text(truncated));
     }
 }
 
@@ -95,13 +138,94 @@ fn begin_pairing(app: tauri::AppHandle, state: State<AppState>) -> Result<String
     Ok(url)
 }
 
-/// Sign out: tear down the SSE worker and forget the Keychain token.
+/// Sign out: tear down the SSE worker, forget the Keychain token, and best-
+/// effort notify the server to revoke the device registration.
 #[tauri::command]
-fn sign_out(state: State<AppState>) -> Result<(), String> {
+fn sign_out(app: tauri::AppHandle, state: State<AppState>) -> Result<(), String> {
+    // Stop the SSE stream first so the token can't race.
     if let Some(client) = state.sse.lock().unwrap().take() {
         client.stop();
     }
-    keychain::clear_token()
+
+    // Best-effort server-side revocation. The route (DELETE /devices/:id) may
+    // not exist yet (#9 slice) — ignore 404 and any network errors.
+    if let Some(token) = keychain::load_token() {
+        let url = format!("{}/devices/me", public_url());
+        let _ = std::thread::spawn(move || {
+            let client = reqwest::blocking::Client::new();
+            let _ = client
+                .delete(&url)
+                .header("X-Device-Token", &token)
+                .send();
+        });
+    }
+
+    keychain::clear_token()?;
+
+    // Reset tray state.
+    *state.last_clip.lock().unwrap() = None;
+    *state.conn_status.lock().unwrap() = ConnStatus::Offline;
+    update_tray(&app, ConnStatus::Offline);
+    if let Some(item) = app.menu_item("last-clip") {
+        let _ = item.as_menuitem().map(|m| m.set_text("— no clips yet —"));
+    }
+
+    Ok(())
+}
+
+/// Enable autostart via the autostart plugin.
+#[tauri::command]
+fn enable_autostart(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autostart_manager()
+        .enable()
+        .map_err(|e| format!("enable autostart: {e}"))
+}
+
+/// Disable autostart via the autostart plugin.
+#[tauri::command]
+fn disable_autostart(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autostart_manager()
+        .disable()
+        .map_err(|e| format!("disable autostart: {e}"))
+}
+
+/// Return whether autostart is currently enabled.
+#[tauri::command]
+fn autostart_enabled(app: tauri::AppHandle) -> Result<bool, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autostart_manager()
+        .is_enabled()
+        .map_err(|e| format!("autostart_enabled: {e}"))
+}
+
+/// Show (or create) the Settings window.
+#[tauri::command]
+fn open_settings(app: tauri::AppHandle) -> Result<(), String> {
+    show_settings_window(&app);
+    Ok(())
+}
+
+/// Show or create the Settings webview window.
+fn show_settings_window(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("settings") {
+        let _ = w.show();
+        let _ = w.set_focus();
+        return;
+    }
+    match WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
+        .title("Voice Clip — Settings")
+        .inner_size(400.0, 300.0)
+        .resizable(false)
+        .build()
+    {
+        Ok(w) => {
+            let _ = w.show();
+            let _ = w.set_focus();
+        }
+        Err(e) => eprintln!("settings window: {e}"),
+    }
 }
 
 /// Handle an incoming `voiceclip://callback?token=&state=` deep link:
@@ -151,6 +275,10 @@ fn start_sse(app: &tauri::AppHandle) {
         public_url(),
         token,
         move |s| {
+            // Update tray icon/title.
+            *app_status.state::<AppState>().conn_status.lock().unwrap() = s;
+            update_tray(&app_status, s);
+            // Emit to the webview.
             let _ = app_status.emit(
                 "status",
                 StatusEvent {
@@ -160,6 +288,11 @@ fn start_sse(app: &tauri::AppHandle) {
         },
         move |c| {
             let preview: String = c.text.chars().take(140).collect();
+            // Update in-memory last clip and tray menu item.
+            *app_clip.state::<AppState>().last_clip.lock().unwrap() =
+                Some(preview.clone());
+            update_tray_clip(&app_clip, &preview);
+            // Emit to the webview.
             let _ = app_clip.emit(
                 "clip",
                 ClipEvent {
@@ -177,6 +310,101 @@ fn focus_window(app: &tauri::AppHandle) {
         let _ = w.show();
         let _ = w.set_focus();
     }
+}
+
+/// Build the tray icon and its context menu.
+fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let clip_item = MenuItem::with_id(app, "last-clip", "— no clips yet —", false, None::<&str>)?;
+    let sep1 = PredefinedMenuItem::separator(app)?;
+    let open_item = MenuItem::with_id(app, "open-app", "Open Voice Clip", true, None::<&str>)?;
+    let settings_item = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
+    let sep2 = PredefinedMenuItem::separator(app)?;
+    let updates_item =
+        MenuItem::with_id(app, "check-updates", "Check for Updates", true, None::<&str>)?;
+    let sep3 = PredefinedMenuItem::separator(app)?;
+    let logout_item = MenuItem::with_id(app, "logout", "Logout", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, "quit", "Quit Voice Clip", true, None::<&str>)?;
+
+    let menu = Menu::with_items(
+        app,
+        &[
+            &clip_item,
+            &sep1,
+            &open_item,
+            &settings_item,
+            &sep2,
+            &updates_item,
+            &sep3,
+            &logout_item,
+            &quit_item,
+        ],
+    )?;
+
+    let app_handle = app.clone();
+    TrayIconBuilder::with_id("main")
+        .menu(&menu)
+        .title(tray_title(ConnStatus::Offline))
+        .tooltip("Voice Clip")
+        .on_menu_event(move |app, event| {
+            match event.id.as_ref() {
+                "open-app" => {
+                    focus_window(app);
+                }
+                "settings" => {
+                    show_settings_window(app);
+                }
+                "check-updates" => {
+                    // Placeholder — real updater is issue #9.
+                    eprintln!("check-updates: not yet implemented (see issue #9)");
+                }
+                "logout" => {
+                    let state = app.state::<AppState>();
+                    if let Some(client) = state.sse.lock().unwrap().take() {
+                        client.stop();
+                    }
+                    if let Some(token) = keychain::load_token() {
+                        let url = format!("{}/devices/me", public_url());
+                        std::thread::spawn(move || {
+                            let client = reqwest::blocking::Client::new();
+                            let _ = client
+                                .delete(&url)
+                                .header("X-Device-Token", &token)
+                                .send();
+                        });
+                    }
+                    let _ = keychain::clear_token();
+                    *state.last_clip.lock().unwrap() = None;
+                    *state.conn_status.lock().unwrap() = ConnStatus::Offline;
+                    update_tray(app, ConnStatus::Offline);
+                    if let Some(item) = app.menu_item("last-clip") {
+                        let _ = item.as_menuitem().map(|m| m.set_text("— no clips yet —"));
+                    }
+                    // Notify the webview so it flips to signed-out view.
+                    let _ = app.emit("signed_out", ());
+                    focus_window(app);
+                }
+                "quit" => {
+                    app.exit(0);
+                }
+                _ => {}
+            }
+        })
+        .on_tray_icon_event(move |tray, event| {
+            // Left-click on the tray icon shows the main window (macOS convention).
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                focus_window(tray.app_handle());
+            }
+        })
+        .build(app_handle)?;
+
+    Ok(())
 }
 
 /// Tiny query parser for `voiceclip://callback?token=...&state=...`.
@@ -262,6 +490,10 @@ mod url {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            None,
+        ))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
@@ -269,10 +501,17 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             is_paired,
             begin_pairing,
-            sign_out
+            sign_out,
+            enable_autostart,
+            disable_autostart,
+            autostart_enabled,
+            open_settings
         ])
         .setup(|app| {
             let handle = app.handle().clone();
+
+            // Build the tray icon + menu.
+            build_tray(&handle)?;
 
             // Cold-start deep link (app launched BY the voiceclip:// URL).
             if let Ok(Some(urls)) = app.deep_link().get_current() {

@@ -2,8 +2,8 @@
 //
 // This file is intentionally thin: all security-relevant logic (one-time
 // state validation, Keychain, SSE, pbcopy) lives in Rust (src-tauri). The
-// webview only renders the two views and forwards two user intents
-// (sign in / sign out) to Rust commands.
+// webview only renders the two views and forwards user intents to Rust
+// commands.
 
 const { invoke } = window.__TAURI__.core
 const { listen } = window.__TAURI__.event
@@ -79,6 +79,12 @@ listen('clip', (e) => {
 
 listen('paired', async () => {
   await refresh()
+})
+
+// Tray logout action: flip the view back to signed-out without a full
+// round-trip (Rust already cleared the Keychain before emitting this).
+listen('signed_out', () => {
+  show('signedOut')
 })
 
 refresh()
