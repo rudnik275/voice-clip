@@ -364,6 +364,48 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
         })
       }
 
+      // ---- /devices (session auth) ----
+      // The PWA profile modal lists the user's paired Macs. `label` is the
+      // device_name the Tauri app reported at pairing (may be null).
+      if (pathname === '/devices') {
+        if (method !== 'GET') return new Response('Method Not Allowed', { status: 405 })
+        const authed = resolveUserFromRequest(req, sessions, users)
+        if (!authed) return unauthorized()
+        return Response.json(
+          devices.list(authed.user.id).map((d) => ({
+            id: d.id,
+            label: d.device_name,
+            created_at: d.created_at,
+            last_seen_at: d.last_seen_at,
+          })),
+        )
+      }
+
+      // ---- /devices/:id (session auth) ----
+      // Revoke a paired Mac. The ownership gate returns an IDENTICAL 404 for
+      // "no such device" and "not your device" — never leak whether an id
+      // exists for another user. revoke() deletes the device row, which
+      // FK-cascades its pending_deliveries (devices.pending FK ON DELETE
+      // CASCADE — see db.ts), so no explicit pending cleanup is needed.
+      // disconnect() then aborts any live SSE stream so the revoked Tauri
+      // app re-auths (and its now-dead token gets a 401).
+      if (pathname.startsWith('/devices/')) {
+        if (method !== 'DELETE') return new Response('Method Not Allowed', { status: 405 })
+        const authed = resolveUserFromRequest(req, sessions, users)
+        if (!authed) return unauthorized()
+        const id = pathname.slice('/devices/'.length)
+        const d = devices.findById(id)
+        if (!d || d.user_id !== authed.user.id) {
+          return new Response(JSON.stringify({ error: 'not found' }), {
+            status: 404,
+            headers: { 'content-type': 'application/json' },
+          })
+        }
+        devices.revoke(id)
+        liveBus.disconnect(id)
+        return Response.json({ ok: true })
+      }
+
       // ---- /auth/google/start ----
       if (pathname === '/auth/google/start') {
         if (method !== 'GET') return new Response('Method Not Allowed', { status: 405 })

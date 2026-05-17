@@ -76,4 +76,49 @@ describe('live-bus (in-memory pub/sub keyed by device_id)', () => {
     // The dead subscriber is dropped, so a later publish is also false.
     expect(bus.publish('dev-1', { seq: 2 })).toBe(false)
   })
+
+  test('disconnect errors the live stream and drops the subscriber', () => {
+    const bus = createLiveBus()
+    let erroredWith: unknown
+    let closed = false
+    // The real /events route hands a ReadableStreamDefaultController; the
+    // bus only needs enqueue for publish but disconnect must abort the
+    // stream so the Tauri app sees the socket drop and re-auths.
+    const controller = {
+      enqueue(_chunk: Uint8Array) {},
+      error(e?: unknown) {
+        erroredWith = e
+      },
+      close() {
+        closed = true
+      },
+    }
+    bus.subscribe('dev-1', controller)
+
+    bus.disconnect('dev-1')
+
+    expect(erroredWith).toBeInstanceOf(Error)
+    expect(closed).toBe(false)
+    // Subscriber is gone — a later publish finds nobody.
+    expect(bus.publish('dev-1', { seq: 1 })).toBe(false)
+  })
+
+  test('disconnect on an unknown device is a no-op (no throw)', () => {
+    const bus = createLiveBus()
+    expect(() => bus.disconnect('ghost')).not.toThrow()
+  })
+
+  test('disconnect swallows a controller that throws on error()', () => {
+    const bus = createLiveBus()
+    const controller = {
+      enqueue(_chunk: Uint8Array) {},
+      error() {
+        throw new Error('already errored')
+      },
+      close() {},
+    }
+    bus.subscribe('dev-1', controller)
+    expect(() => bus.disconnect('dev-1')).not.toThrow()
+    expect(bus.publish('dev-1', { seq: 1 })).toBe(false)
+  })
 })
