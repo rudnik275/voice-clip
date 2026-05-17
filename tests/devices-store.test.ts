@@ -49,6 +49,16 @@ describe('devices-store (SQLite)', () => {
     expect(devices.findByToken('nope')).toBeNull()
   })
 
+  test('findById(id) returns the device; unknown → null', () => {
+    const { devices, user } = setup()
+    const d = devices.create(user.id, 'Mac A')
+    const found = devices.findById(d.id)
+    expect(found?.id).toBe(d.id)
+    expect(found?.user_id).toBe(user.id)
+    expect(found?.device_name).toBe('Mac A')
+    expect(devices.findById('d_nope')).toBeNull()
+  })
+
   test('list(userId) returns all of a user devices, scoped per user', () => {
     const { db, devices, users, user } = setup()
     const other = users.upsertByGoogleSub({ sub: 'g2', email: 'bob@example.com', name: 'Bob' })

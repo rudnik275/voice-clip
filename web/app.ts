@@ -36,6 +36,12 @@ const historyClose = $<HTMLButtonElement>('history-close')
 const historyClear = $<HTMLButtonElement>('history-clear')
 const historyBackdrop = $<HTMLElement>('history-backdrop')
 const downloadCta = $<HTMLAnchorElement>('download-cta')
+const userPill = $<HTMLElement>('user-pill')
+const profileModal = $<HTMLElement>('profile-modal')
+const profileBackdrop = $<HTMLElement>('profile-backdrop')
+const profileClose = $<HTMLButtonElement>('profile-close')
+const profileLogout = $<HTMLButtonElement>('profile-logout')
+const profileDevices = $<HTMLElement>('profile-devices')
 
 // Detect desktop (no coarse pointer = no touch screen) once at load.
 // Live re-detection on resize is NOT required — spec says load-time only.
@@ -198,6 +204,121 @@ historyClear.addEventListener('click', async () => {
     void loadHistory(true)
   } else {
     showStatus('Clear failed', 'error')
+  }
+})
+
+// ---- profile modal (paired devices + sign out) ----
+
+type DeviceRow = {
+  id: string
+  label: string | null
+  created_at: number
+  last_seen_at: number
+}
+
+// Compact relative "last seen" — same vocabulary the user sees elsewhere.
+function fmtRelative(ms: number): string {
+  const diff = Date.now() - ms
+  if (!Number.isFinite(diff) || diff < 0) return 'just now'
+  const sec = Math.floor(diff / 1000)
+  if (sec < 45) return 'just now'
+  const min = Math.floor(sec / 60)
+  if (min < 60) return `${min}m ago`
+  const hr = Math.floor(min / 60)
+  if (hr < 24) return `${hr}h ago`
+  const day = Math.floor(hr / 24)
+  if (day < 30) return `${day}d ago`
+  return new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
+function renderDevice(d: DeviceRow): HTMLElement {
+  const row = document.createElement('div')
+  row.className = 'device-item'
+  row.dataset.id = d.id
+
+  const meta = document.createElement('div')
+  meta.className = 'device-meta'
+  const label = document.createElement('div')
+  label.className = 'device-label'
+  label.textContent = d.label || 'Unnamed Mac'
+  const seen = document.createElement('div')
+  seen.className = 'device-seen'
+  seen.textContent = `Last seen ${fmtRelative(d.last_seen_at)}`
+  meta.append(label, seen)
+
+  const revoke = document.createElement('button')
+  revoke.type = 'button'
+  revoke.className = 'device-revoke'
+  revoke.textContent = 'Revoke'
+  revoke.addEventListener('click', async () => {
+    if (!confirm(`Revoke "${d.label || 'Unnamed Mac'}"? It will stop receiving clips.`)) return
+    revoke.disabled = true
+    try {
+      const r = await fetch(`/devices/${encodeURIComponent(d.id)}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      })
+      if (r.ok) {
+        row.remove()
+        if (!profileDevices.querySelector('.device-item')) renderDevicesEmpty()
+        showStatus('Device revoked', 'success')
+      } else {
+        revoke.disabled = false
+        showStatus('Revoke failed', 'error')
+      }
+    } catch {
+      revoke.disabled = false
+      showStatus('Revoke failed', 'error')
+    }
+  })
+
+  row.append(meta, revoke)
+  return row
+}
+
+function renderDevicesEmpty() {
+  const empty = document.createElement('p')
+  empty.className = 'profile-empty'
+  empty.textContent = 'No paired Macs yet'
+  profileDevices.append(empty)
+}
+
+async function loadDevices(): Promise<void> {
+  profileDevices.innerHTML = ''
+  try {
+    const r = await fetch('/devices', { credentials: 'include' })
+    if (!r.ok) {
+      showStatus('Failed to load devices', 'error')
+      return
+    }
+    const list = (await r.json()) as DeviceRow[]
+    if (list.length === 0) {
+      renderDevicesEmpty()
+      return
+    }
+    for (const d of list) profileDevices.append(renderDevice(d))
+  } catch {
+    showStatus('Failed to load devices', 'error')
+  }
+}
+
+function openProfile() {
+  profileModal.hidden = false
+  void loadDevices()
+}
+function closeProfile() {
+  profileModal.hidden = true
+}
+
+userPill.addEventListener('click', openProfile)
+profileClose.addEventListener('click', closeProfile)
+profileBackdrop.addEventListener('click', closeProfile)
+profileLogout.addEventListener('click', async () => {
+  if (!confirm('Sign out?')) return
+  try {
+    await fetch('/logout', { method: 'POST', credentials: 'include' })
+  } finally {
+    window.location.href = '/'
   }
 })
 

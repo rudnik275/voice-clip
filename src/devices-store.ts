@@ -26,6 +26,7 @@ export interface Device {
 export interface DevicesStore {
   create(userId: string, deviceName?: string | null): Device
   findByToken(token: string): Device | null
+  findById(id: string): Device | null
   list(userId: string): Device[]
   revoke(id: string): void
   touch(id: string): void
@@ -56,6 +57,9 @@ export function createDevicesStore(db: DB, now: () => number = Date.now): Device
   const selectByToken = db.query<DeviceRow, [string]>(
     'SELECT * FROM devices WHERE device_token = ?',
   )
+  const selectById = db.query<DeviceRow, [string]>(
+    'SELECT * FROM devices WHERE id = ?',
+  )
   const selectByUser = db.query<DeviceRow, [string]>(
     'SELECT * FROM devices WHERE user_id = ? ORDER BY created_at ASC',
   )
@@ -72,6 +76,10 @@ export function createDevicesStore(db: DB, now: () => number = Date.now): Device
 
     findByToken(token: string): Device | null {
       return selectByToken.get(token) ?? null
+    },
+
+    findById(id: string): Device | null {
+      return selectById.get(id) ?? null
     },
 
     list(userId: string): Device[] {
