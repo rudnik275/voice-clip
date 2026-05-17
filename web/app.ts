@@ -35,6 +35,11 @@ const historyList = $<HTMLElement>('history-list')
 const historyClose = $<HTMLButtonElement>('history-close')
 const historyClear = $<HTMLButtonElement>('history-clear')
 const historyBackdrop = $<HTMLElement>('history-backdrop')
+const downloadCta = $<HTMLAnchorElement>('download-cta')
+
+// Detect desktop (no coarse pointer = no touch screen) once at load.
+// Live re-detection on resize is NOT required — spec says load-time only.
+const isDesktop = !window.matchMedia('(pointer: coarse)').matches
 
 let statusTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -366,4 +371,12 @@ recBtn.addEventListener('pointerleave', () => {
 })
 
 // ---- boot ----
+
+// Desktop: hide record button, show macOS download CTA instead.
+// Touch devices (phones/tablets): record button stays visible, CTA stays hidden.
+if (isDesktop) {
+  recBtn.hidden = true
+  downloadCta.hidden = false
+}
+
 void refreshCost()
