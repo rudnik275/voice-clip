@@ -35,11 +35,12 @@ pub struct Clip {
 
 /// Connection lifecycle, surfaced to the webview as Connected / Reconnecting
 /// / Offline plus the last clip preview.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ConnStatus {
     Connecting,
     Connected,
     Reconnecting,
+    #[default]
     Offline,
 }
 

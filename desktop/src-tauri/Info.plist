@@ -16,9 +16,9 @@
       </array>
     </dict>
   </array>
-  <!-- Background clipboard receiver: no Dock icon, no menu bar. The window
-       is opened explicitly from main.rs only while pairing / showing state. -->
+  <!-- Menubar-only app: no Dock icon. The main window is opened explicitly
+       from the tray menu or during pairing / settings. -->
   <key>LSUIElement</key>
-  <false/>
+  <true/>
 </dict>
 </plist>
