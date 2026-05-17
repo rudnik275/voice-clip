@@ -132,6 +132,11 @@ elif sudo -n install -d -o "$(id -un)" -g "$(id -gn)" "$RD" "$RD/data" 2>/dev/nu
 else
   exit 42                                     # needs a one-time root action
 fi
+# The image runs as a non-root user (`USER app`); the bind-mounted data dir
+# is owned by the deploy user on the host, so without this the container
+# can't create /data/voice-clip.sqlite → SQLITE_CANTOPEN crash-loop.
+# Single-tenant box, dir holds only this app's SQLite → 0777 is fine here.
+chmod 777 "$RD/data"
 docker network inspect infra-net >/dev/null 2>&1 || docker network create infra-net >/dev/null
 REMOTE
 if [ "$rc" -eq 42 ]; then
