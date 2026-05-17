@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# redeploy.sh — pull the latest image + restart, without waiting for the 6h
+# Watchtower poll. Use after a `git push master` when you want it live now.
+#
+# Usage:
+#   ./scripts/redeploy.sh                       # prompts for the VPS host
+#   SSH_HOST=46.62.229.131 ./scripts/redeploy.sh
+#   ./scripts/redeploy.sh 46.62.229.131
+#
+# First deploy / .env / cloudflared changes → use bootstrap-deploy.sh instead.
+
+set -euo pipefail
+
+SSH_USER="${SSH_USER:-deploy}"
+REMOTE_DIR="${REMOTE_DIR:-/opt/voice-clip}"
+PUBLIC_URL="https://${PUBLIC_HOST:-voice.rudifamily.uk}"
+
+SSH_HOST="${1:-${SSH_HOST:-}}"
+[ -z "${SSH_HOST}" ] && read -rp "VPS host/IP: " SSH_HOST
+[ -n "${SSH_HOST}" ] || { echo "✗ no VPS host" >&2; exit 1; }
+T="${SSH_USER}@${SSH_HOST}"
+
+echo "▸ Rolling ${REMOTE_DIR} on ${T}"
+ssh -o ConnectTimeout=10 "${T}" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.prod.yml pull && docker compose -f docker-compose.prod.yml up -d"
+
+echo "▸ Verifying ${PUBLIC_URL}/version"
+for i in $(seq 1 20); do
+  if V=$(curl -fsS --max-time 5 "${PUBLIC_URL}/version" 2>/dev/null); then
+    echo "✓ LIVE → ${V}"; exit 0
+  fi
+  sleep 3
+done
+echo "✗ not reachable in time — ssh ${T} \"cd ${REMOTE_DIR} && docker compose logs --tail=80 voice-clip\"" >&2
+exit 1
