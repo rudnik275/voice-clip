@@ -16,7 +16,7 @@
 #   2. Reminds you to flip the GHCR package to Public (one click; your gh
 #      token has no packages scope so this can't be automated).
 #   3. VPS: creates /opt/voice-clip/data, ensures the shared infra-net.
-#   4. Ships .env + docker-compose.prod.yml (scp, never printed).
+#   4. Ships .env + docker-compose.prod.yml + litestream.yml (scp).
 #   5. Adds the voice.rudifamily.uk ingress to the VPS cloudflared config
 #      (idempotent) and restarts cloudflared.
 #   6. docker compose pull + up -d  (first deploy, synchronous).
@@ -50,6 +50,7 @@ die()  { printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 for c in ssh scp curl; do command -v "$c" >/dev/null || die "$c not found"; done
 [ -f .env ] || die ".env not found in repo root — copy .env.example to .env first"
 [ -f docker-compose.prod.yml ] || die "docker-compose.prod.yml missing"
+[ -f litestream.yml ] || die "litestream.yml missing (compose bind-mounts it)"
 
 # ─── 1. Resolve VPS host ────────────────────────────────────────────────────
 SSH_HOST="${1:-${SSH_HOST:-}}"
@@ -148,10 +149,11 @@ fi
 [ "$rc" -eq 0 ] || die "VPS prep failed (rc=${rc})"
 ok "data dir + infra-net ready"
 
-# ─── 5. Ship .env + compose (scp; contents never printed) ──────────────────
-say "Shipping .env + compose to ${REMOTE_DIR}"
+# ─── 5. Ship .env + compose + litestream config (scp; never printed) ───────
+say "Shipping .env + compose + litestream.yml to ${REMOTE_DIR}"
 scp -q "${SSH_OPTS[@]}" .env "${T}:${REMOTE_DIR}/.env"
 scp -q "${SSH_OPTS[@]}" docker-compose.prod.yml "${T}:${REMOTE_DIR}/docker-compose.prod.yml"
+scp -q "${SSH_OPTS[@]}" litestream.yml "${T}:${REMOTE_DIR}/litestream.yml"
 ssh "${SSH_OPTS[@]}" "${T}" "chmod 600 '${REMOTE_DIR}/.env'"
 ok "files in place"
 
