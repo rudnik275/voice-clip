@@ -166,7 +166,11 @@ fi
 # ─── 7. First deploy (synchronous) ─────────────────────────────────────────
 say "Pulling image + starting container"
 if ! ssh "${SSH_OPTS[@]}" "${T}" "cd '${REMOTE_DIR}' && docker compose -f docker-compose.prod.yml pull && docker compose -f docker-compose.prod.yml up -d"; then
-  die "docker pull/up failed — most likely the GHCR package is still Private (step 3): ${GHCR_SETTINGS_URL}"
+  die "docker pull/up failed. Two usual causes:
+  1. GHCR package still Private — make it Public: ${GHCR_SETTINGS_URL}
+  2. Stale ghcr.io login on the VPS (a bad token shadows the anonymous pull
+     of a public image). Clear it, then re-run me:
+       ssh ${T} \"docker logout ghcr.io\""
 fi
 ok "container started"
 
