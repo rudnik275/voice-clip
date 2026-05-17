@@ -19,6 +19,10 @@ import { readFile } from 'node:fs/promises'
 import { openDb, type DB } from './db'
 import { createUsersStore, type UsersStore } from './users-store'
 import { createSessionsStore, type SessionsStore } from './sessions-store'
+import { createHistoryStore, type HistoryStore } from './history-store'
+import { createCostStore, type CostStore } from './cost-store'
+import type { TranscriptionResult } from './transcribe'
+import { calcCostUsd } from './pricing'
 import { createAllowlist, type Allowlist } from './allowlist'
 import { createGoogleOAuth, type GoogleFetcher, type GoogleOAuth } from './google-oauth'
 import {
@@ -47,6 +51,9 @@ export interface ServerDeps {
   // Test seams
   users?: UsersStore
   sessions?: SessionsStore
+  history?: HistoryStore
+  costs?: CostStore
+  transcribe?: (input: Uint8Array, filename: string) => Promise<TranscriptionResult>
   db?: DB
   now?: () => number
 }
@@ -101,6 +108,20 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
   const db = deps.db ?? openDb(join(deps.dataDir, 'voice-clip.sqlite'))
   const users = deps.users ?? createUsersStore(db, deps.now)
   const sessions = deps.sessions ?? createSessionsStore(db, deps.now)
+  const history = deps.history ?? createHistoryStore(db, deps.now)
+  const costs = deps.costs ?? createCostStore(db)
+  // The real transcriber pulls in `./config` (which fail-fasts on missing
+  // OPENAI_API_KEY) and the OpenAI client. Load it lazily and ONLY when no
+  // stub is injected, so store/auth/integration tests that pass a stub never
+  // trip the config fail-fast just by importing the server.
+  let realTranscribe: ServerDeps['transcribe'] | undefined
+  const transcribe: NonNullable<ServerDeps['transcribe']> = async (bytes, name) => {
+    if (deps.transcribe) return deps.transcribe(bytes, name)
+    if (!realTranscribe) {
+      realTranscribe = (await import('./transcribe')).transcribeAudio
+    }
+    return realTranscribe(bytes, name)
+  }
 
   // Google OAuth is optional in tests that don't exercise it — but for /auth
   // routes we need clientId+secret. If unset, those routes return 503.
@@ -122,6 +143,20 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
   const homeTpl = await readWebFile('home.html')
   const styleCss = await readWebFile('style.css')
   const manifestJson = await readWebFile('manifest.webmanifest')
+
+  // Bundle + transpile the browser entrypoint once at boot. Bun strips TS
+  // types and produces an ES module the browser can load directly via
+  // <script type="module" src="/app.ts">.
+  const appBuild = await Bun.build({
+    entrypoints: [join(WEB_DIR, 'app.ts')],
+    target: 'browser',
+    minify: false,
+  })
+  const appJs = appBuild.success ? await appBuild.outputs[0]!.text() : ''
+  if (!appBuild.success) {
+    // Surface build failures loudly — a broken bundle means a dead PWA.
+    console.error('web/app.ts build failed:', appBuild.logs)
+  }
 
   function renderHome(name: string): string {
     return homeTpl.replace('__NAME__', escapeHtml(name)).replace('__APP_VERSION__', APP_VERSION)
@@ -166,6 +201,12 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
           headers: { 'content-type': 'application/manifest+json; charset=utf-8' },
         })
       }
+      if (method === 'GET' && pathname === '/app.ts') {
+        return new Response(appJs, {
+          status: 200,
+          headers: { 'content-type': 'text/javascript; charset=utf-8' },
+        })
+      }
 
       // ---- /me ----
       if (pathname === '/me') {
@@ -192,6 +233,95 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
             'content-type': 'application/json',
             'set-cookie': buildClearSessionCookie({ secure: cookieSecure }),
           },
+        })
+      }
+
+      // ---- /upload ----
+      if (pathname === '/upload') {
+        if (method !== 'POST') return new Response('Method Not Allowed', { status: 405 })
+        const authed = resolveUserFromRequest(req, sessions, users)
+        if (!authed) return unauthorized()
+
+        let form: Awaited<ReturnType<Request['formData']>>
+        try {
+          form = await req.formData()
+        } catch {
+          return Response.json({ error: 'expected multipart/form-data' }, { status: 400 })
+        }
+        const audio = form.get('audio')
+        if (!(audio instanceof Blob)) {
+          return Response.json({ error: 'missing audio field' }, { status: 400 })
+        }
+        const recordedAtRaw = form.get('recordedAt')
+        const recordedAt =
+          typeof recordedAtRaw === 'string' && recordedAtRaw.length > 0
+            ? recordedAtRaw
+            : new Date().toISOString()
+        const sourceRaw = form.get('source')
+        const source = sourceRaw === 'offline' ? 'offline' : 'online'
+
+        const bytes = new Uint8Array(await audio.arrayBuffer())
+        const filename = (audio as File).name || 'clip.webm'
+
+        let result: TranscriptionResult
+        try {
+          result = await transcribe(bytes, filename)
+        } catch (e) {
+          return Response.json(
+            { error: `transcription failed: ${(e as Error).message}` },
+            { status: 502 },
+          )
+        }
+
+        const costUsd = result.usage ? calcCostUsd(result.usage) : 0
+        const clip = history.append({
+          userId: authed.user.id,
+          text: result.text,
+          recordedAt,
+          source,
+          costUsd,
+        })
+        if (costUsd > 0) costs.add(authed.user.id, costUsd)
+
+        return Response.json({
+          text: clip.text,
+          seq: clip.seq,
+          recordedAt: clip.recordedAt,
+          cost: costUsd,
+        })
+      }
+
+      // ---- /history ----
+      if (pathname === '/history') {
+        const authed = resolveUserFromRequest(req, sessions, users)
+        if (!authed) return unauthorized()
+
+        if (method === 'GET') {
+          const sinceRaw = url.searchParams.get('since')
+          const limitRaw = url.searchParams.get('limit')
+          const since = sinceRaw !== null ? Number(sinceRaw) : undefined
+          const limit = limitRaw !== null ? Number(limitRaw) : undefined
+          const page = history.list(authed.user.id, {
+            since: since !== undefined && Number.isFinite(since) ? since : undefined,
+            limit: limit !== undefined && Number.isFinite(limit) ? limit : undefined,
+          })
+          return Response.json(page)
+        }
+        if (method === 'DELETE') {
+          history.clear(authed.user.id)
+          return Response.json({ ok: true })
+        }
+        return new Response('Method Not Allowed', { status: 405 })
+      }
+
+      // ---- /cost ----
+      if (pathname === '/cost') {
+        if (method !== 'GET') return new Response('Method Not Allowed', { status: 405 })
+        const authed = resolveUserFromRequest(req, sessions, users)
+        if (!authed) return unauthorized()
+        return Response.json({
+          user: costs.userTotal(authed.user.id),
+          aggregate: costs.aggregateTotal(),
         })
       }
 
