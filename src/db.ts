@@ -58,6 +58,23 @@ const SCHEMA_SQL = `
     user_id   TEXT PRIMARY KEY,
     total_usd REAL NOT NULL
   );
+
+  -- Paired macOS clipboard receivers. One row per Mac app install. The
+  -- device_token is the opaque bearer the Tauri app stores in the Keychain
+  -- and presents on /events (SSE) + /events/ack. UNIQUE so a leaked/duplicate
+  -- token can never resolve to two devices. Cascades on user delete.
+  CREATE TABLE IF NOT EXISTS devices (
+    id            TEXT PRIMARY KEY,
+    user_id       TEXT NOT NULL,
+    device_token  TEXT NOT NULL UNIQUE,
+    device_name   TEXT,
+    created_at    INTEGER NOT NULL,
+    last_seen_at  INTEGER NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_devices_user_id ON devices(user_id);
+  CREATE INDEX IF NOT EXISTS idx_devices_token ON devices(device_token);
 `
 
 export function openDb(path: string): DB {

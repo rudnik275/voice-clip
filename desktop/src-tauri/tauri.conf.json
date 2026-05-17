@@ -1,0 +1,47 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Voice Clip",
+  "version": "0.1.0",
+  "identifier": "com.voiceclip.desktop",
+  "build": {
+    "frontendDist": "../src"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Voice Clip",
+        "width": 420,
+        "height": 540,
+        "resizable": false,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["dmg", "app"],
+    "category": "Productivity",
+    "shortDescription": "Voice Clip macOS clipboard receiver",
+    "macOS": {
+      "minimumSystemVersion": "11.0"
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["voiceclip"]
+      }
+    },
+    "updater": {
+      "active": true,
+      "dialog": true,
+      "pubkey": "REPLACE_WITH_ED25519_PUBLIC_KEY",
+      "endpoints": [
+        "https://github.com/rudnik275/voice-clip/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}

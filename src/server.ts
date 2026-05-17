@@ -21,6 +21,8 @@ import { createUsersStore, type UsersStore } from './users-store'
 import { createSessionsStore, type SessionsStore } from './sessions-store'
 import { createHistoryStore, type HistoryStore } from './history-store'
 import { createCostStore, type CostStore } from './cost-store'
+import { createDevicesStore, type DevicesStore } from './devices-store'
+import { createLiveBus, type LiveBus } from './live-bus'
 import type { TranscriptionResult } from './transcribe'
 import { calcCostUsd } from './pricing'
 import { createAllowlist, type Allowlist } from './allowlist'
@@ -32,6 +34,7 @@ import {
   buildStateCookie,
   parseStateCookie,
   resolveUserFromRequest,
+  resolveDeviceFromRequest,
   unauthorized,
 } from './auth-middleware'
 import { APP_VERSION } from './version'
@@ -53,10 +56,18 @@ export interface ServerDeps {
   sessions?: SessionsStore
   history?: HistoryStore
   costs?: CostStore
+  devices?: DevicesStore
+  liveBus?: LiveBus
   transcribe?: (input: Uint8Array, filename: string) => Promise<TranscriptionResult>
   db?: DB
   now?: () => number
 }
+
+// The GitHub Releases asset the PWA #download-cta points at via
+// /download/latest. `releases/latest/download/<asset>` always resolves to
+// the newest published release's asset of that name.
+const LATEST_DMG_URL =
+  'https://github.com/rudnik275/voice-clip/releases/latest/download/voice-clip.dmg'
 
 export interface RunningServer {
   port: number
@@ -110,6 +121,8 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
   const sessions = deps.sessions ?? createSessionsStore(db, deps.now)
   const history = deps.history ?? createHistoryStore(db, deps.now)
   const costs = deps.costs ?? createCostStore(db)
+  const devices = deps.devices ?? createDevicesStore(db, deps.now)
+  const liveBus = deps.liveBus ?? createLiveBus()
   // The real transcriber pulls in `./config` (which fail-fasts on missing
   // OPENAI_API_KEY) and the OpenAI client. Load it lazily and ONLY when no
   // stub is injected, so store/auth/integration tests that pass a stub never
@@ -135,7 +148,9 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
         now: deps.now,
       })
     : null
-  const redirectUri = oauthReady ? `${deps.publicUrl!.replace(/\/$/, '')}/auth/google/callback` : ''
+  const publicBase = oauthReady ? deps.publicUrl!.replace(/\/$/, '') : ''
+  const redirectUri = oauthReady ? `${publicBase}/auth/google/callback` : ''
+  const desktopRedirectUri = oauthReady ? `${publicBase}/desktop/auth/complete` : ''
 
   // ----- prebuilt static pages -----
   const loginHtml = (await readWebFile('login.html')).replace('__APP_VERSION__', APP_VERSION)
@@ -283,6 +298,20 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
         })
         if (costUsd > 0) costs.add(authed.user.id, costUsd)
 
+        // Fan-out: push the clip to every currently-connected Mac for this
+        // user. Offline Macs simply miss it (pending-clip replay is a later
+        // slice). publish() is a no-op for devices with no live SSE stream.
+        const clipPayload = {
+          seq: clip.seq,
+          text: clip.text,
+          recordedAt: clip.recordedAt,
+          source: clip.source,
+          costUsd,
+        }
+        for (const d of devices.list(authed.user.id)) {
+          liveBus.publish(d.id, clipPayload)
+        }
+
         return Response.json({
           text: clip.text,
           seq: clip.seq,
@@ -390,6 +419,140 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
         h.append('set-cookie', buildClearStateCookie({ secure: cookieSecure }))
         h.append('set-cookie', buildSessionCookie(session.token, { secure: cookieSecure }))
         return new Response(null, { status: 302, headers: h })
+      }
+
+      // ---- /download/latest ----
+      // The PWA #download-cta (added in #8) links here. 302 to the GitHub
+      // Releases "latest" alias so the URL never needs updating per release.
+      if (pathname === '/download/latest') {
+        if (method !== 'GET') return new Response('Method Not Allowed', { status: 405 })
+        return new Response(null, { status: 302, headers: { location: LATEST_DMG_URL } })
+      }
+
+      // ---- /desktop/auth/start ----
+      // Mirrors /auth/google/start but the redirect_uri is the desktop
+      // completion route. The Tauri app opens this in the default browser.
+      if (pathname === '/desktop/auth/start') {
+        if (method !== 'GET') return new Response('Method Not Allowed', { status: 405 })
+        if (!oauth) return new Response('OAuth not configured', { status: 503 })
+        // Honor an app-supplied one-time `state` so the app can correlate the
+        // voiceclip:// callback with the launch that initiated it; otherwise
+        // mint our own. Either way it doubles as the OAuth CSRF state.
+        const requested = url.searchParams.get('state')
+        const state =
+          requested && requested.length > 0 ? requested : randomBytes(16).toString('hex')
+        const authUrl = oauth.getAuthUrl(state, desktopRedirectUri)
+        return new Response(null, {
+          status: 302,
+          headers: {
+            location: authUrl,
+            'set-cookie': buildStateCookie(state, { secure: cookieSecure }),
+          },
+        })
+      }
+
+      // ---- /desktop/auth/complete ----
+      // Mirrors /auth/google/callback, but instead of a session cookie + 302 /
+      // it creates a DEVICE row and 302s to the voiceclip:// deep link the
+      // Tauri app intercepts. No browser session is established here.
+      if (pathname === '/desktop/auth/complete') {
+        if (method !== 'GET') return new Response('Method Not Allowed', { status: 405 })
+        if (!oauth) return new Response('OAuth not configured', { status: 503 })
+
+        const code = url.searchParams.get('code')
+        const state = url.searchParams.get('state')
+        const cookieState = parseStateCookie(req.headers.get('cookie'))
+        if (!code || !state) return new Response('Missing code/state', { status: 400 })
+        if (!cookieState || cookieState !== state) {
+          return new Response('State mismatch', {
+            status: 400,
+            headers: { 'set-cookie': buildClearStateCookie({ secure: cookieSecure }) },
+          })
+        }
+
+        let profile: Awaited<ReturnType<GoogleOAuth['exchangeCode']>>
+        try {
+          profile = await oauth.exchangeCode(code, desktopRedirectUri)
+        } catch (e) {
+          return new Response(`OAuth exchange failed: ${(e as Error).message}`, {
+            status: 400,
+            headers: { 'set-cookie': buildClearStateCookie({ secure: cookieSecure }) },
+          })
+        }
+
+        if (!allowlist.isAllowed(profile.email)) {
+          return new Response(renderAccessDenied(profile.email), {
+            status: 403,
+            headers: {
+              'content-type': 'text/html; charset=utf-8',
+              'set-cookie': buildClearStateCookie({ secure: cookieSecure }),
+            },
+          })
+        }
+
+        const user = users.upsertByGoogleSub({
+          sub: profile.sub,
+          email: profile.email,
+          name: profile.name,
+          picture_url: profile.picture_url,
+        })
+        const device = devices.create(user.id)
+
+        const deepLink =
+          `voiceclip://callback?token=${encodeURIComponent(device.device_token)}` +
+          `&state=${encodeURIComponent(state)}`
+        const h = new Headers({ location: deepLink })
+        h.append('set-cookie', buildClearStateCookie({ secure: cookieSecure }))
+        return new Response(null, { status: 302, headers: h })
+      }
+
+      // ---- /events (SSE; device-token auth) ----
+      // Long-lived Server-Sent-Events stream the Mac app holds open. Each
+      // connection registers its ReadableStream controller in the live-bus
+      // keyed by device id; /upload fan-out enqueues clip frames here.
+      if (pathname === '/events') {
+        if (method !== 'GET') return new Response('Method Not Allowed', { status: 405 })
+        const device = resolveDeviceFromRequest(req, devices)
+        if (!device) return unauthorized()
+        devices.touch(device.id)
+
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            liveBus.subscribe(device.id, controller)
+            // Prelude comment so proxies flush headers and the client sees
+            // the connection is live immediately.
+            controller.enqueue(new TextEncoder().encode(': connected\n\n'))
+          },
+          cancel() {
+            liveBus.unsubscribe(device.id)
+          },
+        })
+        return new Response(stream, {
+          status: 200,
+          headers: {
+            'content-type': 'text/event-stream',
+            'cache-control': 'no-cache, no-transform',
+            connection: 'keep-alive',
+          },
+        })
+      }
+
+      // ---- /events/ack (device-token auth) ----
+      // The Mac app POSTs { seq } after a successful pbcopy. We use it to
+      // bump last_seen_at (delivery liveness). Pending-clip replay is a
+      // later slice, so the seq is only recorded as "device is alive" here.
+      if (pathname === '/events/ack') {
+        if (method !== 'POST') return new Response('Method Not Allowed', { status: 405 })
+        const device = resolveDeviceFromRequest(req, devices)
+        if (!device) return unauthorized()
+        // Body is optional/best-effort — a malformed body still acks liveness.
+        try {
+          await req.json()
+        } catch {
+          // ignore — liveness ack does not depend on the body
+        }
+        devices.touch(device.id)
+        return Response.json({ ok: true })
       }
 
       // ---- / (root) ----

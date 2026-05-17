@@ -2,24 +2,28 @@ import { describe, expect, test } from 'bun:test'
 import { openDb } from '../src/db'
 import { createUsersStore } from '../src/users-store'
 import { createSessionsStore } from '../src/sessions-store'
+import { createDevicesStore } from '../src/devices-store'
 import {
   parseSessionCookie,
   buildSessionCookie,
   buildClearSessionCookie,
   resolveUserFromRequest,
   unauthorized,
+  parseDeviceToken,
+  resolveDeviceFromRequest,
 } from '../src/auth-middleware'
 
 function setup() {
   const db = openDb(':memory:')
   const users = createUsersStore(db)
   const sessions = createSessionsStore(db)
+  const devices = createDevicesStore(db)
   const user = users.upsertByGoogleSub({
     sub: 'g-sub-1',
     email: 'alice@example.com',
     name: 'Alice',
   })
-  return { users, sessions, user }
+  return { users, sessions, devices, user }
 }
 
 describe('parseSessionCookie', () => {
@@ -123,5 +127,55 @@ describe('unauthorized', () => {
     expect(res.headers.get('content-type')).toContain('application/json')
     const body = (await res.json()) as { error: string }
     expect(body.error).toBeString()
+  })
+})
+
+describe('parseDeviceToken', () => {
+  test('reads ?device_token= from the query string', () => {
+    const req = new Request('http://localhost/events?device_token=abc123')
+    expect(parseDeviceToken(req)).toBe('abc123')
+  })
+
+  test('reads the X-Device-Token header', () => {
+    const req = new Request('http://localhost/events', {
+      headers: { 'x-device-token': 'hdr-token' },
+    })
+    expect(parseDeviceToken(req)).toBe('hdr-token')
+  })
+
+  test('query string wins over header when both are present', () => {
+    const req = new Request('http://localhost/events?device_token=q', {
+      headers: { 'x-device-token': 'h' },
+    })
+    expect(parseDeviceToken(req)).toBe('q')
+  })
+
+  test('returns null when neither is present or value is empty', () => {
+    expect(parseDeviceToken(new Request('http://localhost/events'))).toBeNull()
+    expect(parseDeviceToken(new Request('http://localhost/events?device_token='))).toBeNull()
+  })
+})
+
+describe('resolveDeviceFromRequest', () => {
+  test('returns the Device for a valid token (query or header)', () => {
+    const { devices, user } = setup()
+    const d = devices.create(user.id)
+    const qReq = new Request(`http://localhost/events?device_token=${d.device_token}`)
+    expect(resolveDeviceFromRequest(qReq, devices)?.id).toBe(d.id)
+    const hReq = new Request('http://localhost/events', {
+      headers: { 'x-device-token': d.device_token },
+    })
+    expect(resolveDeviceFromRequest(hReq, devices)?.id).toBe(d.id)
+  })
+
+  test('returns null when no token is present', () => {
+    const { devices } = setup()
+    expect(resolveDeviceFromRequest(new Request('http://localhost/events'), devices)).toBeNull()
+  })
+
+  test('returns null for an unknown token', () => {
+    const { devices } = setup()
+    const req = new Request('http://localhost/events?device_token=not-real')
+    expect(resolveDeviceFromRequest(req, devices)).toBeNull()
   })
 })

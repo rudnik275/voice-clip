@@ -6,6 +6,7 @@
 
 import type { Session, SessionsStore } from './sessions-store'
 import type { User, UsersStore } from './users-store'
+import type { Device, DevicesStore } from './devices-store'
 
 const SESSION_COOKIE_NAME = 'session'
 const DEFAULT_MAX_AGE_SEC = 90 * 24 * 60 * 60 // 90 days, matches SESSION_TTL_MS
@@ -110,4 +111,31 @@ export function resolveUserFromRequest(
 
 export function unauthorized(): Response {
   return Response.json({ error: 'unauthorized' }, { status: 401 })
+}
+
+// ----- device-token auth (Mac Tauri app) -----
+//
+// The Mac app authenticates with the opaque device_token issued at pairing,
+// stored in its macOS Keychain. It rides either as `?device_token=` (SSE
+// connections can't set custom headers from the Rust reqwest stream as
+// cleanly as a query param) OR as the `X-Device-Token` header (for /events/ack
+// POSTs). Query wins if both are present.
+
+const DEVICE_TOKEN_HEADER = 'x-device-token'
+
+export function parseDeviceToken(req: Request): string | null {
+  const fromQuery = new URL(req.url).searchParams.get('device_token')
+  if (fromQuery && fromQuery.length > 0) return fromQuery
+  const fromHeader = req.headers.get(DEVICE_TOKEN_HEADER)
+  if (fromHeader && fromHeader.length > 0) return fromHeader
+  return null
+}
+
+export function resolveDeviceFromRequest(
+  req: Request,
+  devices: DevicesStore,
+): Device | null {
+  const token = parseDeviceToken(req)
+  if (!token) return null
+  return devices.findByToken(token)
 }
