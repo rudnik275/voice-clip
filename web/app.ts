@@ -333,6 +333,7 @@ let rafId = 0
 let recording = false
 let startedAt = 0
 let timeTimer: ReturnType<typeof setInterval> | undefined
+let recordMime = 'audio/webm'
 
 const VOICE_ALPHA = 0.16 // smoothing — see CLAUDE.md "Voice reactivity"
 let smoothedLevel = 0
@@ -359,6 +360,41 @@ function fmtElapsed(ms: number): string {
   return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
 }
 
+// MediaRecorder output is browser-specific: Chrome/Firefox/Android → audio/webm
+// (opus), iOS Safari → audio/mp4 (AAC) and CANNOT do webm at all. We must send
+// the real container + a matching filename extension, because OpenAI's
+// transcription API decodes by the filename extension — labelling iOS mp4
+// bytes as "clip.webm" makes OpenAI reject them and the server returns 502.
+const MIME_CANDIDATES = ['audio/webm', 'audio/mp4', 'audio/ogg', 'audio/wav']
+
+function pickRecorderMime(): string | undefined {
+  if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return undefined
+  for (const m of MIME_CANDIDATES) if (MediaRecorder.isTypeSupported(m)) return m
+  return undefined
+}
+
+function extForMime(mime: string): string {
+  const base = (mime.split(';')[0] || '').trim()
+  switch (base) {
+    case 'audio/webm':
+      return 'webm'
+    case 'audio/mp4':
+      return 'mp4'
+    case 'audio/x-m4a':
+    case 'audio/m4a':
+      return 'm4a'
+    case 'audio/ogg':
+      return 'ogg'
+    case 'audio/wav':
+    case 'audio/x-wav':
+      return 'wav'
+    case 'audio/mpeg':
+      return 'mp3'
+    default:
+      return 'webm'
+  }
+}
+
 async function startRecording() {
   if (recording) return
   try {
@@ -370,7 +406,11 @@ async function startRecording() {
   recording = true
   chunks = []
   startedAt = Date.now()
-  mediaRecorder = new MediaRecorder(stream)
+  const chosenMime = pickRecorderMime()
+  mediaRecorder = chosenMime
+    ? new MediaRecorder(stream, { mimeType: chosenMime })
+    : new MediaRecorder(stream)
+  recordMime = mediaRecorder.mimeType || chosenMime || 'audio/webm'
   mediaRecorder.ondataavailable = (e) => {
     if (e.data.size > 0) chunks.push(e.data)
   }
@@ -406,7 +446,7 @@ function teardownAudio() {
 
 function uploadAndTranscribe(blob: Blob, recordedAt: string): Promise<string> {
   const fd = new FormData()
-  fd.set('audio', blob, 'clip.webm')
+  fd.set('audio', blob, `clip.${extForMime(blob.type || recordMime)}`)
   fd.set('recordedAt', recordedAt)
   fd.set('source', 'online')
   return fetch('/upload', { method: 'POST', body: fd, credentials: 'include' }).then(async (r) => {
@@ -427,7 +467,10 @@ async function stopRecording() {
   const recordedAt = new Date(startedAt).toISOString()
 
   const stopped = new Promise<Blob>((resolve) => {
-    mediaRecorder!.onstop = () => resolve(new Blob(chunks, { type: 'audio/webm' }))
+    mediaRecorder!.onstop = () => {
+      const mime = mediaRecorder!.mimeType || recordMime
+      resolve(new Blob(chunks, { type: mime }))
+    }
   })
   mediaRecorder.stop()
 
