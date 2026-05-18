@@ -113,10 +113,10 @@ function renderClip(clip: HistoryClip): HTMLElement {
   const time = document.createElement('span')
   time.className = 'history-time'
   time.textContent = fmtTime(clip.recordedAt)
-  const badge = document.createElement('span')
-  badge.className = clip.source === 'offline' ? 'badge offline' : 'badge'
-  badge.textContent = clip.source
-  head.append(time, badge)
+  const cost = document.createElement('span')
+  cost.className = 'history-cost'
+  cost.textContent = fmtUsd(clip.costUsd)
+  head.append(time, cost)
 
   const text = document.createElement('p')
   text.className = 'history-text'
@@ -135,10 +135,7 @@ function renderClip(clip: HistoryClip): HTMLElement {
       showStatus('Copy failed', 'error')
     }
   })
-  const cost = document.createElement('span')
-  cost.className = 'history-cost'
-  cost.textContent = fmtUsd(clip.costUsd)
-  actions.append(copyBtn, cost)
+  actions.append(copyBtn)
 
   item.append(head, text, actions)
   return item
@@ -326,14 +323,26 @@ profileLogout.addEventListener('click', async () => {
 
 let mediaRecorder: MediaRecorder | undefined
 let chunks: Blob[] = []
-let stream: MediaStream | undefined
+// The mic stream and AudioContext are acquired ONCE and kept alive for the
+// whole page session. Re-running getUserMedia per press cost ~1s of latency
+// AND — because teardownAudio() stopped the track right after
+// mediaRecorder.stop() — raced the recorder's final flush, so every few
+// recordings produced an empty (5-byte) blob → server 502. One persistent
+// stream makes start instant and the capture deterministic.
+let micStream: MediaStream | undefined
 let audioCtx: AudioContext | undefined
+let micSource: MediaStreamAudioSourceNode | undefined
 let analyser: AnalyserNode | undefined
 let rafId = 0
 let recording = false
 let startedAt = 0
 let timeTimer: ReturnType<typeof setInterval> | undefined
 let recordMime = 'audio/webm'
+
+// Below these a recording is treated as "nothing captured" and is NOT sent
+// to the server (avoids the 400/502 from empty or sub-0.1s audio).
+const MIN_RECORD_MS = 350
+const MIN_RECORD_BYTES = 1200
 
 const VOICE_ALPHA = 0.16 // smoothing — see CLAUDE.md "Voice reactivity"
 let smoothedLevel = 0
@@ -395,32 +404,59 @@ function extForMime(mime: string): string {
   }
 }
 
+// Acquire the mic ONCE; reuse the live stream for every subsequent press
+// (instant start, no per-press getUserMedia latency).
+async function ensureMic(): Promise<MediaStream> {
+  const live = micStream?.getAudioTracks().some((t) => t.readyState === 'live')
+  if (micStream && live) return micStream
+  micStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+  micSource = undefined // a new stream invalidates the old source node
+  return micStream
+}
+
+// One AudioContext + analyser for the page lifetime; created/resumed inside
+// the user gesture (iOS rule). Reused across recordings.
+function ensureAudioGraph(s: MediaStream) {
+  if (!audioCtx) audioCtx = new AudioContext()
+  if (audioCtx.state === 'suspended') void audioCtx.resume()
+  if (!micSource) {
+    micSource = audioCtx.createMediaStreamSource(s)
+    analyser = audioCtx.createAnalyser()
+    analyser.fftSize = 1024
+    micSource.connect(analyser)
+  }
+}
+
 async function startRecording() {
   if (recording) return
+  recording = true
+  let s: MediaStream
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    s = await ensureMic()
   } catch {
-    showStatus('Microphone access denied', 'error')
+    recording = false
+    showStatus('Нет доступа к микрофону', 'error')
     return
   }
-  recording = true
+  // An ultra-fast tap may have already fired stopRecording during the
+  // (first-time only) getUserMedia await — abort cleanly.
+  if (!recording) return
+
   chunks = []
   startedAt = Date.now()
   const chosenMime = pickRecorderMime()
   mediaRecorder = chosenMime
-    ? new MediaRecorder(stream, { mimeType: chosenMime })
-    : new MediaRecorder(stream)
+    ? new MediaRecorder(s, { mimeType: chosenMime })
+    : new MediaRecorder(s)
   recordMime = mediaRecorder.mimeType || chosenMime || 'audio/webm'
   mediaRecorder.ondataavailable = (e) => {
     if (e.data.size > 0) chunks.push(e.data)
   }
-  mediaRecorder.start()
+  // timeslice → periodic dataavailable, so audio is never lost even if the
+  // final flush at stop() is abrupt.
+  mediaRecorder.start(250)
 
-  audioCtx = new AudioContext()
-  const src = audioCtx.createMediaStreamSource(stream)
-  analyser = audioCtx.createAnalyser()
-  analyser.fftSize = 1024
-  src.connect(analyser)
+  ensureAudioGraph(s)
   smoothedLevel = 0
   rafId = requestAnimationFrame(tickVoice)
 
@@ -432,25 +468,23 @@ async function startRecording() {
   }, 250)
 }
 
-function teardownAudio() {
+// Stop only the per-recording meters/visualiser. The mic stream AND the
+// AudioContext stay alive so the next press is instant and never races the
+// recorder's flush (the old teardown stopped the track here → empty blobs).
+function stopMeters() {
   if (rafId) cancelAnimationFrame(rafId)
   rafId = 0
   recBtn.style.setProperty('--voice-level', '0')
   if (timeTimer) clearInterval(timeTimer)
-  if (stream) for (const t of stream.getTracks()) t.stop()
-  stream = undefined
-  if (audioCtx) void audioCtx.close()
-  audioCtx = undefined
-  analyser = undefined
+  timeTimer = undefined
 }
 
-// The Cloudflare Tunnel in front of the origin flaps per-request on the
-// iPhone path (edge-side 502 while origin + tunnel are both healthy — see
-// the long diagnosis: it never even reaches cloudflared). The audio blob is
-// still in memory, and a 502 means the request was not processed, so the
-// safe + correct fix is a bounded client retry: a fresh attempt lands on a
-// new edge connection and succeeds (mirrors "reopen and it works").
-const UPLOAD_MAX_ATTEMPTS = 4
+// The recurring "502 every few recordings" was NOT a tunnel flap — it was
+// empty/short blobs (capture race, now fixed by the persistent stream +
+// MIN_RECORD_* guard). This retry stays only as a thin safety net for a
+// GENUINE one-off transport blip on an otherwise-valid recording (the blob
+// is in memory and a 5xx means it was not processed → safe to resend).
+const UPLOAD_MAX_ATTEMPTS = 3
 const uploadBackoffMs = (attempt: number) => Math.min(600 * 2 ** (attempt - 1), 4000)
 const delay = (ms: number) => new Promise<void>((res) => setTimeout(res, ms))
 
@@ -480,7 +514,6 @@ function uploadAndTranscribe(blob: Blob, recordedAt: string): Promise<string> {
     const fd = new FormData()
     fd.set('audio', blob, filename)
     fd.set('recordedAt', recordedAt)
-    fd.set('source', 'online')
 
     let r: Response
     try {
@@ -515,11 +548,31 @@ function uploadAndTranscribe(blob: Blob, recordedAt: string): Promise<string> {
   return attempt(1)
 }
 
-async function stopRecording() {
-  if (!recording || !mediaRecorder) return
-  recording = false
-  const recordedAt = new Date(startedAt).toISOString()
+// Sentinel: nothing meaningful was captured — surfaced as a calm hint, not
+// an error, and never sent to the server.
+class TooShort extends Error {}
 
+async function stopRecording() {
+  if (!recording) return
+  recording = false
+  const durationMs = Date.now() - startedAt
+
+  const resetUi = () => {
+    recBtn.classList.remove('recording', 'busy')
+    recLabel.textContent = 'Hold to talk'
+    recTime.textContent = ''
+  }
+
+  // Start still in flight (ultra-fast tap) or recorder never armed — nothing
+  // was captured; just reset, no server round-trip.
+  if (!mediaRecorder || mediaRecorder.state !== 'recording') {
+    stopMeters()
+    resetUi()
+    showStatus('Слишком коротко — удерживай дольше', 'info')
+    return
+  }
+
+  const recordedAt = new Date(startedAt).toISOString()
   const stopped = new Promise<Blob>((resolve) => {
     mediaRecorder!.onstop = () => {
       const mime = mediaRecorder!.mimeType || recordMime
@@ -531,13 +584,18 @@ async function stopRecording() {
   recBtn.classList.remove('recording')
   recBtn.classList.add('busy')
   recLabel.textContent = ''
-  teardownAudio()
+  stopMeters()
 
   // iOS Safari only honours navigator.clipboard.write() synchronously inside
   // the user gesture. Hand it a PENDING ClipboardItem promise NOW so the
-  // grant survives the async upload — the promise resolves to the transcript
-  // once the round-trip completes.
-  const textPromise = stopped.then((blob) => uploadAndTranscribe(blob, recordedAt))
+  // grant survives the async upload — it resolves to the transcript once the
+  // round-trip completes (or rejects harmlessly if nothing was captured).
+  const textPromise = stopped.then((blob) => {
+    if (durationMs < MIN_RECORD_MS || blob.size < MIN_RECORD_BYTES) {
+      throw new TooShort()
+    }
+    return uploadAndTranscribe(blob, recordedAt)
+  })
 
   let clipboardWritten = false
   try {
@@ -566,7 +624,11 @@ async function stopRecording() {
       }
     }
   } catch (e) {
-    showStatus((e as Error).message || 'Transcription failed', 'error')
+    if (e instanceof TooShort) {
+      showStatus('Слишком коротко — удерживай дольше', 'info')
+    } else {
+      showStatus((e as Error).message || 'Не удалось распознать', 'error')
+    }
   } finally {
     recBtn.classList.remove('busy')
     recLabel.textContent = 'Hold to talk'

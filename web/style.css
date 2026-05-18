@@ -622,8 +622,13 @@ main {
 }
 
 .history-cost {
+  display: inline-block;
   font-size: 10px;
-  color: var(--muted);
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: rgba(115, 131, 255, 0.14);
+  color: var(--accent-a);
   font-variant-numeric: tabular-nums;
 }
 
