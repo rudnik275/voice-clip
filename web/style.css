@@ -234,30 +234,123 @@ main {
   text-shadow: 0 4px 24px rgba(255, 85, 119, 0.4);
 }
 
-#rec.recording #rec-time,
-#rec.busy #rec-time {
+#rec.recording #rec-time {
   opacity: 1;
 }
 
+/* While transcribing: hide the timer + mic, show the dots loader only */
 #rec.busy #rec-time {
-  text-shadow: 0 4px 24px rgba(115, 131, 255, 0.4);
-}
-
-.busy-spinner {
-  position: absolute;
-  width: 36%;
-  height: 36%;
-  border-radius: 50%;
-  border: 2px solid transparent;
-  border-top-color: var(--accent-a);
-  border-right-color: var(--accent-b);
   opacity: 0;
-  animation: spin 0.9s linear infinite;
-  transition: opacity 0.2s ease;
 }
 
-#rec.busy .busy-spinner {
+/* Transcribing loader — three softly breathing dots (replaces the old
+   hairline spinner). Spring/breathing curve per design conventions. */
+.busy-dots {
+  position: absolute;
+  display: flex;
+  gap: 11px;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+  pointer-events: none;
+}
+
+.busy-dots i {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent-a), var(--accent-b));
+  box-shadow: 0 2px 12px rgba(115, 131, 255, 0.55);
+  animation: busy-bounce 1.15s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.busy-dots i:nth-child(2) {
+  animation-delay: 0.16s;
+}
+.busy-dots i:nth-child(3) {
+  animation-delay: 0.32s;
+}
+
+#rec.busy .busy-dots {
   opacity: 1;
+}
+
+@keyframes busy-bounce {
+  0%,
+  80%,
+  100% {
+    transform: translateY(0) scale(0.7);
+    opacity: 0.45;
+  }
+  40% {
+    transform: translateY(-9px) scale(1);
+    opacity: 1;
+  }
+}
+
+/* Paused: keep the recording aura but calm/steady (no voice reactivity) */
+#rec.paused {
+  border-color: rgba(255, 200, 60, 0.5);
+}
+#rec.paused::before {
+  background: conic-gradient(
+    from 0deg,
+    rgba(255, 200, 60, 0.45),
+    rgba(255, 122, 79, 0.35),
+    rgba(255, 200, 60, 0.45)
+  );
+  opacity: 0.55;
+  animation-duration: 14s;
+}
+
+/* Pause / resume control — glass pill below the record button, only
+   visible while a recording is in progress. */
+#rec-pause {
+  margin-top: 26px;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 11px 22px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--fg);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border-strong);
+  border-radius: 999px;
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  box-shadow: var(--shadow-deep), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 0.18s cubic-bezier(0.34, 1.4, 0.64, 1), border-color 0.3s ease;
+}
+
+#rec-pause:active {
+  transform: scale(0.95);
+}
+
+#rec-pause svg {
+  width: 16px;
+  height: 16px;
+  fill: var(--accent-a);
+}
+
+#rec-pause .resume-icon {
+  display: none;
+}
+
+/* When paused, the control offers "Resume" */
+#rec-pause.is-paused {
+  border-color: rgba(255, 200, 60, 0.5);
+}
+#rec-pause.is-paused .pause-icon {
+  display: none;
+}
+#rec-pause.is-paused .resume-icon {
+  display: block;
+  fill: #ffd070;
 }
 
 /* === Top bar === */

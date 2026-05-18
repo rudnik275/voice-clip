@@ -27,6 +27,8 @@ const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) 
 const recBtn = $<HTMLButtonElement>('rec')
 const recLabel = $<HTMLElement>('rec-label')
 const recTime = $<HTMLElement>('rec-time')
+const recPause = $<HTMLButtonElement>('rec-pause')
+const recPauseLabel = $<HTMLElement>('rec-pause-label')
 const statusEl = $<HTMLElement>('status')
 const costPill = $<HTMLElement>('cost-pill')
 const historyBtn = $<HTMLButtonElement>('history-btn')
@@ -344,6 +346,21 @@ let recordMime = 'audio/webm'
 const MIN_RECORD_MS = 350
 const MIN_RECORD_BYTES = 1200
 
+// Tap-to-toggle (not push-to-hold) + mid-recording pause. Pause is done by
+// disabling the mic track (NOT MediaRecorder.pause()) so the result is one
+// continuous, always-valid blob with a silent gap — robust across
+// browsers/codecs (esp. iOS mp4, which we just fixed for corruption).
+let paused = false
+let pausedAt = 0
+let pausedTotalMs = 0
+let transcribing = false
+
+// Spoken time so far, excluding any paused stretches.
+function elapsedMs(): number {
+  const base = Date.now() - startedAt - pausedTotalMs
+  return paused ? base - (Date.now() - pausedAt) : base
+}
+
 const VOICE_ALPHA = 0.16 // smoothing — see CLAUDE.md "Voice reactivity"
 let smoothedLevel = 0
 
@@ -444,6 +461,9 @@ async function startRecording() {
 
   chunks = []
   startedAt = Date.now()
+  paused = false
+  pausedTotalMs = 0
+  for (const t of s.getAudioTracks()) t.enabled = true // clear any prior pause
   const chosenMime = pickRecorderMime()
   mediaRecorder = chosenMime
     ? new MediaRecorder(s, { mimeType: chosenMime })
@@ -463,9 +483,31 @@ async function startRecording() {
   recBtn.classList.add('recording')
   recLabel.textContent = 'Recording'
   recTime.textContent = '00:00'
+  recPause.classList.remove('is-paused')
+  recPauseLabel.textContent = 'Pause'
+  recPause.hidden = false
   timeTimer = setInterval(() => {
-    recTime.textContent = fmtElapsed(Date.now() - startedAt)
+    recTime.textContent = fmtElapsed(elapsedMs())
   }, 250)
+}
+
+// Pause/resume mid-recording by toggling the mic track. Recorder.state
+// stays 'recording' the whole time → the final blob is one valid file.
+function togglePause() {
+  if (!recording || !micStream) return
+  paused = !paused
+  for (const t of micStream.getAudioTracks()) t.enabled = !paused
+  if (paused) {
+    pausedAt = Date.now()
+    recBtn.classList.add('paused')
+    recPause.classList.add('is-paused')
+    recPauseLabel.textContent = 'Resume'
+  } else {
+    pausedTotalMs += Date.now() - pausedAt
+    recBtn.classList.remove('paused')
+    recPause.classList.remove('is-paused')
+    recPauseLabel.textContent = 'Pause'
+  }
 }
 
 // Stop only the per-recording meters/visualiser. The mic stream AND the
@@ -552,23 +594,31 @@ function uploadAndTranscribe(blob: Blob, recordedAt: string): Promise<string> {
 // an error, and never sent to the server.
 class TooShort extends Error {}
 
+// Tear down the recording UI (pause control, paused state, meters) and
+// always leave the mic track ENABLED so the next recording isn't silent
+// if the user stopped while paused.
+function endRecordingUi() {
+  stopMeters()
+  paused = false
+  if (micStream) for (const t of micStream.getAudioTracks()) t.enabled = true
+  recBtn.classList.remove('recording', 'paused')
+  recPause.classList.remove('is-paused')
+  recPause.hidden = true
+  recTime.textContent = ''
+}
+
 async function stopRecording() {
   if (!recording) return
   recording = false
-  const durationMs = Date.now() - startedAt
-
-  const resetUi = () => {
-    recBtn.classList.remove('recording', 'busy')
-    recLabel.textContent = 'Hold to talk'
-    recTime.textContent = ''
-  }
+  const durationMs = elapsedMs()
 
   // Start still in flight (ultra-fast tap) or recorder never armed — nothing
   // was captured; just reset, no server round-trip.
   if (!mediaRecorder || mediaRecorder.state !== 'recording') {
-    stopMeters()
-    resetUi()
-    showStatus('Слишком коротко — удерживай дольше', 'info')
+    endRecordingUi()
+    recBtn.classList.remove('busy')
+    recLabel.textContent = 'Tap to record'
+    showStatus('Слишком коротко — попробуй ещё раз', 'info')
     return
   }
 
@@ -581,10 +631,10 @@ async function stopRecording() {
   })
   mediaRecorder.stop()
 
-  recBtn.classList.remove('recording')
+  endRecordingUi()
   recBtn.classList.add('busy')
   recLabel.textContent = ''
-  stopMeters()
+  transcribing = true
 
   // iOS Safari only honours navigator.clipboard.write() synchronously inside
   // the user gesture. Hand it a PENDING ClipboardItem promise NOW so the
@@ -625,30 +675,27 @@ async function stopRecording() {
     }
   } catch (e) {
     if (e instanceof TooShort) {
-      showStatus('Слишком коротко — удерживай дольше', 'info')
+      showStatus('Слишком коротко — запиши подольше', 'info')
     } else {
       showStatus((e as Error).message || 'Не удалось распознать', 'error')
     }
   } finally {
     recBtn.classList.remove('busy')
-    recLabel.textContent = 'Hold to talk'
+    recLabel.textContent = 'Tap to record'
     recTime.textContent = ''
+    transcribing = false
   }
 }
 
-// Press-and-hold (pointer) — tap also works (down then up).
-recBtn.addEventListener('pointerdown', (e) => {
-  e.preventDefault()
-  void startRecording()
-})
-recBtn.addEventListener('pointerup', (e) => {
-  e.preventDefault()
-  void stopRecording()
-})
-recBtn.addEventListener('pointercancel', () => void stopRecording())
-recBtn.addEventListener('pointerleave', () => {
+// Tap to start, tap again to stop (no press-and-hold). Taps are ignored
+// while a transcription is still in flight.
+recBtn.addEventListener('click', () => {
+  if (transcribing) return
   if (recording) void stopRecording()
+  else void startRecording()
 })
+
+recPause.addEventListener('click', () => togglePause())
 
 // ---- boot ----
 

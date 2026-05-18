@@ -38,17 +38,27 @@
     </div>
 
     <main>
-      <button id="rec" type="button" aria-label="Hold to record">
+      <button id="rec" type="button" aria-label="Tap to record">
         <span class="rec-inner">
           <svg class="mic-icon" viewBox="0 0 24 24" aria-hidden="true">
             <rect x="9" y="2" width="6" height="12" rx="3" />
             <path d="M5 11a7 7 0 0 0 14 0" />
             <path d="M12 18v4" />
           </svg>
-          <span id="rec-label">Hold to talk</span>
+          <span id="rec-label">Tap to record</span>
         </span>
         <span id="rec-time"></span>
-        <span class="busy-spinner" aria-hidden="true"></span>
+        <span class="busy-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+      </button>
+      <button id="rec-pause" type="button" aria-label="Pause recording" hidden>
+        <svg class="pause-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="6" y="5" width="4" height="14" rx="1.5" />
+          <rect x="14" y="5" width="4" height="14" rx="1.5" />
+        </svg>
+        <svg class="resume-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M7 4l13 8-13 8z" />
+        </svg>
+        <span id="rec-pause-label">Pause</span>
       </button>
       <a class="download-cta" id="download-cta" href="/download/latest" hidden>
         <span class="download-cta-icon" aria-hidden="true">
