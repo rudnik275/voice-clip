@@ -6,61 +6,49 @@ update manifest with your private key, and publishes both to GitHub Releases.
 The server route `GET /desktop/update.json` 302-redirects the Tauri app to the
 signed `latest.json` manifest on each release.
 
-**This page covers the four one-time steps you must do before the first
-`desktop-v*` tag triggers a working auto-update.**
-
 ---
 
-## Step 1 — Generate the Ed25519 signing keypair
+## One command (do this once)
 
-Run this on your local Mac (requires Tauri CLI, `cargo install tauri-cli` if
-not already present):
+Run on your local Mac, in your **own** terminal (not via an AI session — the
+generator handles the private key):
 
 ```sh
-cd desktop/src-tauri
-cargo tauri signer generate -w ~/.tauri/voiceclip.key
+bash desktop/scripts/setup-signing-key.sh
 ```
 
-This writes the **private key** to `~/.tauri/voiceclip.key` (keep it out of
-git — it's in your home dir, not the repo) and prints the **public key** to
-stdout. Copy it; you'll need it in Step 3.
+Prereqs the script checks for you: `cargo-tauri`
+(`cargo install tauri-cli --version "^2"`), the 1Password CLI signed in
+(`op signin` / unlock the app), and `gh` authenticated.
+
+It does everything end-to-end:
+
+- generates the Ed25519 keypair with a random 192-bit passphrase
+- uploads the **private key** to 1Password → `VoiceClip / tauri-signing-key`
+  (document) and the **passphrase** → `VoiceClip / tauri-signing-key passphrase`
+- sets the two GitHub Actions secrets `TAURI_SIGNING_PRIVATE_KEY` and
+  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (values via stdin, never stdout)
+- prints **only the public key**
+
+No secret value is ever echoed. The script refuses to overwrite an existing
+`~/.tauri/voiceclip.key` unless you pass `FORCE=1` — rotating a key that has
+already signed a published release permanently breaks auto-update for every
+installed app, so only force when you are certain no signed release exists yet.
+
+Hand the printed public key to Claude (it is safe to commit, not a secret);
+Claude writes it into `desktop/src-tauri/tauri.conf.json` (`plugins.updater.pubkey`).
+
+> Recovery: the private key + passphrase live in 1Password vault `VoiceClip`.
+> If GitHub secrets are ever lost, re-create them from there — do **not**
+> regenerate the key, or installed apps can no longer auto-update.
 
 ---
 
-## Step 2 — Add GitHub Actions secrets
+## Cut a release
 
-Go to **GitHub repo → Settings → Secrets and variables → Actions → New
-repository secret** and add:
-
-| Secret name | Value |
-|---|---|
-| `TAURI_SIGNING_PRIVATE_KEY` | Full contents of `~/.tauri/voiceclip.key` |
-| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | The passphrase you chose (or empty string if you pressed Enter when prompted) |
-
-These two secrets are referenced in `.github/workflows/tauri-release.yml` and
-are never logged or printed anywhere.
-
----
-
-## Step 3 — Paste the public key into `tauri.conf.json`
-
-Open `desktop/src-tauri/tauri.conf.json` and replace the placeholder:
-
-```json
-"pubkey": "REPLACE_WITH_ED25519_PUBLIC_KEY"
-```
-
-with the public key string printed in Step 1 (starts with `dW50cnVzdGVk...`
-or similar base64). Commit and push this change — the public key is safe to
-commit; only the private key must stay out of the repo.
-
----
-
-## Step 4 — Tag a release to trigger CI
-
-1. Bump `"version"` in `desktop/src-tauri/tauri.conf.json` (e.g. `"0.2.0"`).
-2. Commit: `git commit -am "chore: bump desktop version to 0.2.0"`
-3. Tag and push:
+1. Bump `version` in `desktop/src-tauri/tauri.conf.json` **and** `Cargo.toml`
+   (keep them equal), refresh `Cargo.lock` (`cargo check`).
+2. Commit, then tag and push:
 
 ```sh
 git tag desktop-v0.2.0 && git push origin desktop-v0.2.0
@@ -69,7 +57,7 @@ git tag desktop-v0.2.0 && git push origin desktop-v0.2.0
 The `tauri-release` workflow fires automatically:
 - Builds a universal `.dmg` (`aarch64` + `x86_64` via `lipo`).
 - Signs the `latest.json` updater manifest with your Ed25519 key.
-- Creates a GitHub Release named `Voice Clip desktop-v0.2.0` with both assets attached.
+- Creates a GitHub Release named `Voice Clip desktop-v0.2.0` with both assets.
 
 ---
 
@@ -87,8 +75,9 @@ The `tauri-release` workflow fires automatically:
 
 ## Secret discipline
 
-- The private key file (`~/.tauri/voiceclip.key`) must never enter git, chat, or
-  AI context. Store a backup in 1Password as a DOCUMENT item.
+- The private key (1Password document `tauri-signing-key`) and its passphrase
+  must never enter git, chat, or AI context. The setup script enforces this by
+  suppressing the generator's output and piping secrets straight to `gh`/`op`.
 - The GitHub secret `TAURI_SIGNING_PRIVATE_KEY` is only visible to Actions
   runners; it is masked in all logs.
 - The public key in `tauri.conf.json` is not a secret — it is safe (and required)
