@@ -37,3 +37,16 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # tauri-action names the DMG with the version (Voice Clip_X.Y.Z_universal.dmg),
+      # so the server's stable /download/latest → releases/latest/download/
+      # voice-clip.dmg can't resolve it. Attach a stable-named copy.
+      - name: Attach stable-named voice-clip.dmg
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          dmg=$(ls desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg | head -1)
+          echo "Found DMG: $dmg"
+          cp "$dmg" voice-clip.dmg
+          gh release upload "${{ github.ref_name }}" voice-clip.dmg --clobber --repo "${{ github.repository }}"
