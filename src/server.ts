@@ -13,7 +13,7 @@
 // The route table is intentionally minimal — slice #3 adds /upload + history.
 
 import { join } from 'node:path'
-import { randomBytes } from 'node:crypto'
+import { randomBytes, createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 
 import { openDb, type DB } from './db'
@@ -101,7 +101,13 @@ async function readWebFile(name: string): Promise<string> {
 function htmlResponse(html: string, status = 200, extraHeaders: Record<string, string> = {}): Response {
   return new Response(html, {
     status,
-    headers: { 'content-type': 'text/html; charset=utf-8', ...extraHeaders },
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      // HTML carries the versioned asset URLs — it must never be cached
+      // (by the browser or Cloudflare) or it would pin an old ?v=hash.
+      'cache-control': 'no-store',
+      ...extraHeaders,
+    },
   })
 }
 
@@ -166,9 +172,9 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
   const desktopRedirectUri = oauthReady ? `${publicBase}/desktop/auth/complete` : ''
 
   // ----- prebuilt static pages -----
-  const loginHtml = (await readWebFile('login.html')).replace('__APP_VERSION__', APP_VERSION)
-  const accessDeniedTpl = await readWebFile('access-denied.html')
-  const homeTpl = await readWebFile('home.html')
+  const loginTplRaw = (await readWebFile('login.html')).replace('__APP_VERSION__', APP_VERSION)
+  const accessDeniedTplRaw = await readWebFile('access-denied.html')
+  const homeTplRaw = await readWebFile('home.html')
   const styleCss = await readWebFile('style.css')
   const manifestJson = await readWebFile('manifest.webmanifest')
 
@@ -185,6 +191,23 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
     // Surface build failures loudly — a broken bundle means a dead PWA.
     console.error('web/app.ts build failed:', appBuild.logs)
   }
+
+  // Versioned asset URLs = a content hash of CSS+JS. HTML is served
+  // `no-store` and always points at /style.css?v=HASH & /app.ts?v=HASH,
+  // while those assets are cached `immutable`. A deploy that changes either
+  // file changes the hash → the URL → busting BOTH the browser and the
+  // Cloudflare edge cache. Without this, Cloudflare's default 4h static
+  // cache kept serving stale CSS against fresh HTML → broken layout after
+  // every deploy (white pause button / invisible loader, etc.).
+  const ASSET_VER = createHash('sha1').update(styleCss).update(appJs).digest('hex').slice(0, 10)
+  const withAssetVer = (html: string): string =>
+    html
+      .replaceAll('/style.css"', `/style.css?v=${ASSET_VER}"`)
+      .replaceAll('/app.ts"', `/app.ts?v=${ASSET_VER}"`)
+
+  const loginHtml = withAssetVer(loginTplRaw)
+  const homeTpl = withAssetVer(homeTplRaw)
+  const accessDeniedTpl = withAssetVer(accessDeniedTplRaw)
 
   function renderHome(name: string): string {
     return homeTpl.replace('__NAME__', escapeHtml(name)).replace('__APP_VERSION__', APP_VERSION)
@@ -220,7 +243,11 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
       if (method === 'GET' && pathname === '/style.css') {
         return new Response(styleCss, {
           status: 200,
-          headers: { 'content-type': 'text/css; charset=utf-8' },
+          headers: {
+            'content-type': 'text/css; charset=utf-8',
+            // URL is content-versioned (?v=hash) → safe to cache forever.
+            'cache-control': 'public, max-age=31536000, immutable',
+          },
         })
       }
       if (method === 'GET' && pathname === '/manifest.webmanifest') {
@@ -232,7 +259,11 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
       if (method === 'GET' && pathname === '/app.ts') {
         return new Response(appJs, {
           status: 200,
-          headers: { 'content-type': 'text/javascript; charset=utf-8' },
+          headers: {
+            'content-type': 'text/javascript; charset=utf-8',
+            // URL is content-versioned (?v=hash) → safe to cache forever.
+            'cache-control': 'public, max-age=31536000, immutable',
+          },
         })
       }
 

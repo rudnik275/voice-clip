@@ -305,7 +305,6 @@ main {
 /* Pause / resume control — glass pill below the record button, only
    visible while a recording is in progress. */
 #rec-pause {
-  margin-top: 26px;
   display: inline-flex;
   align-items: center;
   gap: 9px;
