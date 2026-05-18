@@ -29,7 +29,10 @@ const BACKOFF_CAP_MS: u64 = 30_000;
 pub struct Clip {
     pub seq: i64,
     pub text: String,
+    /// Server frame carries "online"/"offline"; the desktop receiver
+    /// pbcopy's regardless, so this is kept only to document the contract.
     #[serde(default)]
+    #[allow(dead_code)]
     pub source: String,
 }
 

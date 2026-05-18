@@ -2,7 +2,4 @@
 src-tauri/target/
 # Tauri 2 codegen (capabilities schema, etc.)
 src-tauri/gen/
-# Cargo lockfile is intentionally committed for apps, but the agent
-# sandbox has no Rust toolchain to generate it — it is produced on the
-# first `cargo build` during the manual macOS smoke.
-src-tauri/Cargo.lock
+# src-tauri/Cargo.lock IS committed (binary crate → reproducible CI release).

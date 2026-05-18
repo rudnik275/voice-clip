@@ -52,6 +52,9 @@ struct AppState {
     last_clip: Mutex<Option<String>>,
     /// Current connection status for tray icon state.
     conn_status: Mutex<ConnStatus>,
+    /// Handle to the tray menu's "last clip" item so its label can be
+    /// updated in place — Tauri 2 has no by-id menu-item lookup on AppHandle.
+    clip_item: Mutex<Option<MenuItem<tauri::Wry>>>,
 }
 
 #[derive(Clone, Serialize)]
@@ -99,14 +102,14 @@ fn update_tray(app: &tauri::AppHandle, status: ConnStatus) {
 
 /// Update the "last clip" item in the tray menu.
 fn update_tray_clip(app: &tauri::AppHandle, preview: &str) {
-    if let Some(item) = app.menu_item("last-clip") {
-        let truncated: String = if preview.len() > 60 {
-            let s: String = preview.chars().take(57).collect();
-            format!("{s}…")
-        } else {
-            preview.to_string()
-        };
-        let _ = item.as_menuitem().map(|m| m.set_text(truncated));
+    let truncated: String = if preview.chars().count() > 60 {
+        let s: String = preview.chars().take(57).collect();
+        format!("{s}…")
+    } else {
+        preview.to_string()
+    };
+    if let Some(item) = app.state::<AppState>().clip_item.lock().unwrap().as_ref() {
+        let _ = item.set_text(truncated);
     }
 }
 
@@ -167,8 +170,8 @@ fn sign_out(app: tauri::AppHandle, state: State<AppState>) -> Result<(), String>
     *state.last_clip.lock().unwrap() = None;
     *state.conn_status.lock().unwrap() = ConnStatus::Offline;
     update_tray(&app, ConnStatus::Offline);
-    if let Some(item) = app.menu_item("last-clip") {
-        let _ = item.as_menuitem().map(|m| m.set_text("— no clips yet —"));
+    if let Some(item) = app.state::<AppState>().clip_item.lock().unwrap().as_ref() {
+        let _ = item.set_text("— no clips yet —");
     }
 
     Ok(())
@@ -178,7 +181,7 @@ fn sign_out(app: tauri::AppHandle, state: State<AppState>) -> Result<(), String>
 #[tauri::command]
 fn enable_autostart(app: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_autostart::ManagerExt;
-    app.autostart_manager()
+    app.autolaunch()
         .enable()
         .map_err(|e| format!("enable autostart: {e}"))
 }
@@ -187,7 +190,7 @@ fn enable_autostart(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn disable_autostart(app: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_autostart::ManagerExt;
-    app.autostart_manager()
+    app.autolaunch()
         .disable()
         .map_err(|e| format!("disable autostart: {e}"))
 }
@@ -196,7 +199,7 @@ fn disable_autostart(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn autostart_enabled(app: tauri::AppHandle) -> Result<bool, String> {
     use tauri_plugin_autostart::ManagerExt;
-    app.autostart_manager()
+    app.autolaunch()
         .is_enabled()
         .map_err(|e| format!("autostart_enabled: {e}"))
 }
@@ -315,9 +318,8 @@ fn focus_window(app: &tauri::AppHandle) {
 
 /// Build the tray icon and its context menu.
 fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
-    use tauri_plugin_opener::OpenerExt;
-
     let clip_item = MenuItem::with_id(app, "last-clip", "— no clips yet —", false, None::<&str>)?;
+    *app.state::<AppState>().clip_item.lock().unwrap() = Some(clip_item.clone());
     let sep1 = PredefinedMenuItem::separator(app)?;
     let open_item = MenuItem::with_id(app, "open-app", "Open Voice Clip", true, None::<&str>)?;
     let settings_item = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
@@ -343,7 +345,6 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
         ],
     )?;
 
-    let app_handle = app.clone();
     TrayIconBuilder::with_id("main")
         .menu(&menu)
         .title(tray_title(ConnStatus::Offline))
@@ -401,8 +402,10 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                     *state.last_clip.lock().unwrap() = None;
                     *state.conn_status.lock().unwrap() = ConnStatus::Offline;
                     update_tray(app, ConnStatus::Offline);
-                    if let Some(item) = app.menu_item("last-clip") {
-                        let _ = item.as_menuitem().map(|m| m.set_text("— no clips yet —"));
+                    if let Some(item) =
+                        app.state::<AppState>().clip_item.lock().unwrap().as_ref()
+                    {
+                        let _ = item.set_text("— no clips yet —");
                     }
                     // Notify the webview so it flips to signed-out view.
                     let _ = app.emit("signed_out", ());
@@ -425,7 +428,7 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                 focus_window(tray.app_handle());
             }
         })
-        .build(app_handle)?;
+        .build(app)?;
 
     Ok(())
 }
