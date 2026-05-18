@@ -7,19 +7,6 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <title>voice-clip</title>
     <link rel="stylesheet" href="/style.css" />
-    <style>
-      .footer-version {
-        position: fixed;
-        bottom: max(env(safe-area-inset-bottom), 12px);
-        right: 14px;
-        font-size: 11px;
-        color: var(--muted);
-        letter-spacing: 0.06em;
-        text-transform: uppercase;
-        font-variant-numeric: tabular-nums;
-        pointer-events: none;
-      }
-    </style>
   </head>
   <body>
     <div class="topbar">
@@ -31,10 +18,14 @@
           <path d="M12 7v5l3 2" />
         </svg>
       </button>
-      <div class="topbar-right">
-        <span class="total-pill" id="cost-pill" title="Your spend · all-users total">$0.0000 · Σ $0.0000</span>
-        <span class="user-pill" id="user-pill">__NAME__</span>
-      </div>
+      <button class="user-pill" id="user-pill" type="button" aria-label="Profile">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="8" r="4" />
+          <path d="M4 21v-1a8 8 0 0 1 16 0v1" />
+        </svg>
+        <span class="user-pill-name">__NAME__</span>
+      </button>
     </div>
 
     <main>
@@ -95,13 +86,16 @@
           <button class="ghost-btn danger" id="profile-logout" type="button">Sign out</button>
         </div>
         <div class="profile-body">
+          <div class="profile-stat">
+            <span class="profile-stat-label">Spent</span>
+            <span class="profile-stat-value" id="cost-pill">$0.0000 · Σ $0.0000</span>
+          </div>
           <h3 class="profile-section-title">Paired devices</h3>
           <div class="profile-devices" id="profile-devices"></div>
+          <div class="profile-version">voice-clip · __APP_VERSION__</div>
         </div>
       </div>
     </div>
-
-    <div class="footer-version">__APP_VERSION__</div>
 
     <script type="module" src="/app.ts"></script>
   </body>

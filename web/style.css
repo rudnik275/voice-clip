@@ -53,9 +53,29 @@ body::after {
 
 body::before {
   background:
-    radial-gradient(ellipse 60% 50% at 30% 20%, rgba(115, 131, 255, 0.22), transparent 60%),
-    radial-gradient(ellipse 60% 50% at 80% 90%, rgba(177, 94, 255, 0.18), transparent 60%),
+    radial-gradient(ellipse 60% 50% at 30% 18%, rgba(115, 131, 255, 0.26), transparent 60%),
+    radial-gradient(ellipse 55% 50% at 82% 88%, rgba(177, 94, 255, 0.22), transparent 60%),
+    radial-gradient(ellipse 50% 45% at 88% 12%, rgba(99, 162, 255, 0.12), transparent 65%),
     radial-gradient(ellipse 80% 60% at 50% 50%, rgba(20, 22, 40, 1), var(--bg-0) 80%);
+  /* Slow, subtle drift so the (deliberately minimal) screen feels alive
+     without distracting from the single button. Calm breathing curve. */
+  animation: bg-drift 26s cubic-bezier(0.4, 0, 0.6, 1) infinite alternate;
+  transform-origin: center;
+}
+
+@keyframes bg-drift {
+  from {
+    transform: scale(1) translate3d(0, 0, 0);
+  }
+  to {
+    transform: scale(1.12) translate3d(-2.5%, -2%, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body::before {
+    animation: none;
+  }
 }
 
 body::after {
@@ -84,7 +104,7 @@ main {
 /* === Record button === */
 
 #rec {
-  --size: min(72vw, 62vh, 360px);
+  --size: min(74vw, 60vh, 420px);
   position: relative;
   width: var(--size);
   height: var(--size);
@@ -151,12 +171,15 @@ main {
 #rec.recording {
   --voice-level: 0;
   border-color: rgba(255, 85, 119, calc(0.45 + var(--voice-level) * 0.4));
+  /* Visible "I hear you" pulse: the whole disc breathes with your voice. */
+  transform: scale(calc(1 + var(--voice-level) * 0.06));
   box-shadow:
     var(--shadow-deep),
-    0 0 calc(40px + var(--voice-level) * 60px) rgba(255, 85, 119, calc(0.28 + var(--voice-level) * 0.32)),
+    0 0 calc(36px + var(--voice-level) * 90px) rgba(255, 85, 119, calc(0.30 + var(--voice-level) * 0.45)),
     inset 0 1px 0 rgba(255, 255, 255, 0.10),
-    inset 0 -20px 40px rgba(255, 85, 119, calc(0.10 + var(--voice-level) * 0.15));
-  transition: border-radius 90ms ease-out, border-color 0.3s ease, box-shadow 0.3s ease;
+    inset 0 -20px 40px rgba(255, 85, 119, calc(0.10 + var(--voice-level) * 0.22));
+  transition: border-radius 90ms ease-out, border-color 0.3s ease,
+    box-shadow 0.12s ease-out, transform 0.1s ease-out;
 }
 
 #rec.recording::before {
@@ -373,24 +396,25 @@ main {
 
 .topbar-btn {
   position: relative;
-  width: 38px;
-  height: 38px;
+  width: 50px;
+  height: 50px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--glass-border);
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border-strong);
   backdrop-filter: blur(20px) saturate(180%);
   -webkit-backdrop-filter: blur(20px) saturate(180%);
+  box-shadow: var(--shadow-deep), inset 0 1px 0 rgba(255, 255, 255, 0.07);
   color: var(--fg);
   cursor: pointer;
   display: grid;
   place-items: center;
-  transition: background 0.15s ease, transform 0.1s ease;
+  transition: background 0.15s ease, transform 0.18s cubic-bezier(0.34, 1.4, 0.64, 1);
   -webkit-tap-highlight-color: transparent;
 }
 
-.topbar-btn:hover { background: rgba(255, 255, 255, 0.08); }
-.topbar-btn:active { transform: scale(0.94); }
-.topbar-btn svg { width: 18px; height: 18px; }
+.topbar-btn:hover { background: var(--glass-bg-hover); }
+.topbar-btn:active { transform: scale(0.92); }
+.topbar-btn svg { width: 23px; height: 23px; }
 
 .topbar-badge {
   position: absolute;
@@ -451,26 +475,38 @@ main {
 .user-pill {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   font-family: inherit;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.01em;
   color: var(--fg);
   background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
+  border: 1px solid var(--glass-border-strong);
   backdrop-filter: blur(20px) saturate(180%);
   -webkit-backdrop-filter: blur(20px) saturate(180%);
-  padding: 6px 11px;
+  box-shadow: var(--shadow-deep), inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  height: 50px;
+  padding: 0 18px;
   border-radius: 999px;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
-  max-width: 120px;
+  transition: background 0.15s ease, transform 0.18s cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+.user-pill svg {
+  width: 18px;
+  height: 18px;
+  opacity: 0.7;
+  flex: none;
+}
+.user-pill-name {
+  max-width: 150px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.user-pill:active { transform: scale(0.96); }
+.user-pill:hover { background: var(--glass-bg-hover); }
+.user-pill:active { transform: scale(0.95); }
 
 /* === User menu === */
 
@@ -792,12 +828,54 @@ main {
 }
 
 .profile-section-title {
-  margin: 4px 0 12px;
+  margin: 22px 0 12px;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--muted);
+}
+.profile-section-title:first-child {
+  margin-top: 4px;
+}
+
+/* Spend stat — Liquid Glass row, same family as .device-item */
+.profile-stat {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 16px;
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+}
+
+.profile-stat-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.profile-stat-value {
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent-a);
+}
+
+.profile-version {
+  margin-top: 28px;
+  text-align: center;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .profile-devices {

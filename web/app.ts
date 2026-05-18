@@ -431,17 +431,24 @@ async function ensureMic(): Promise<MediaStream> {
   return micStream
 }
 
-// One AudioContext + analyser for the page lifetime; created/resumed inside
-// the user gesture (iOS rule). Reused across recordings.
-function ensureAudioGraph(s: MediaStream) {
-  if (!audioCtx) audioCtx = new AudioContext()
+// A FRESH AudioContext per recording, created inside the user gesture and
+// closed on stop. A persistent context gets auto-suspended by iOS between
+// recordings → the analyser returned silence → the voice pulsation died.
+// The mic STREAM stays persistent (that is the empty-blob fix); only this
+// lightweight analyser graph is rebuilt.
+function startMeters(s: MediaStream) {
+  audioCtx = new AudioContext()
   if (audioCtx.state === 'suspended') void audioCtx.resume()
-  if (!micSource) {
-    micSource = audioCtx.createMediaStreamSource(s)
-    analyser = audioCtx.createAnalyser()
-    analyser.fftSize = 1024
-    micSource.connect(analyser)
-  }
+  micSource = audioCtx.createMediaStreamSource(s)
+  analyser = audioCtx.createAnalyser()
+  analyser.fftSize = 1024
+  micSource.connect(analyser)
+  // Safari only pulls data through the graph if it reaches a destination —
+  // route the analyser through a muted gain so the meter stays live.
+  const sink = audioCtx.createGain()
+  sink.gain.value = 0
+  analyser.connect(sink)
+  sink.connect(audioCtx.destination)
 }
 
 async function startRecording() {
@@ -476,7 +483,7 @@ async function startRecording() {
   // final flush at stop() is abrupt.
   mediaRecorder.start(250)
 
-  ensureAudioGraph(s)
+  startMeters(s)
   smoothedLevel = 0
   rafId = requestAnimationFrame(tickVoice)
 
@@ -510,15 +517,26 @@ function togglePause() {
   }
 }
 
-// Stop only the per-recording meters/visualiser. The mic stream AND the
-// AudioContext stay alive so the next press is instant and never races the
-// recorder's flush (the old teardown stopped the track here → empty blobs).
+// Tear down the per-recording analyser graph (NOT the mic stream — that
+// stays persistent so the next press is instant and never races the
+// recorder's flush). Closing the context releases the iOS audio slot.
 function stopMeters() {
   if (rafId) cancelAnimationFrame(rafId)
   rafId = 0
   recBtn.style.setProperty('--voice-level', '0')
   if (timeTimer) clearInterval(timeTimer)
   timeTimer = undefined
+  try {
+    micSource?.disconnect()
+  } catch {
+    /* already disconnected */
+  }
+  micSource = undefined
+  analyser = undefined
+  if (audioCtx) {
+    void audioCtx.close()
+    audioCtx = undefined
+  }
 }
 
 // The recurring "502 every few recordings" was NOT a tunnel flap — it was
