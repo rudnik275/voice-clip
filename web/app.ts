@@ -444,21 +444,75 @@ function teardownAudio() {
   analyser = undefined
 }
 
-function uploadAndTranscribe(blob: Blob, recordedAt: string): Promise<string> {
-  const fd = new FormData()
-  fd.set('audio', blob, `clip.${extForMime(blob.type || recordMime)}`)
-  fd.set('recordedAt', recordedAt)
-  fd.set('source', 'online')
-  return fetch('/upload', { method: 'POST', body: fd, credentials: 'include' }).then(async (r) => {
-    if (!r.ok) {
-      const msg = await r.text().catch(() => '')
-      throw new Error(msg || `upload failed (${r.status})`)
+// The Cloudflare Tunnel in front of the origin flaps per-request on the
+// iPhone path (edge-side 502 while origin + tunnel are both healthy — see
+// the long diagnosis: it never even reaches cloudflared). The audio blob is
+// still in memory, and a 502 means the request was not processed, so the
+// safe + correct fix is a bounded client retry: a fresh attempt lands on a
+// new edge connection and succeeds (mirrors "reopen and it works").
+const UPLOAD_MAX_ATTEMPTS = 4
+const uploadBackoffMs = (attempt: number) => Math.min(600 * 2 ** (attempt - 1), 4000)
+const delay = (ms: number) => new Promise<void>((res) => setTimeout(res, ms))
+
+// Extract a human message from a failed response WITHOUT dumping the raw
+// Cloudflare HTML error page into the toast. The server sends JSON
+// {error:"…"}; Cloudflare/edge sends an HTML page — never surface the latter.
+async function failureMessage(r: Response): Promise<string> {
+  try {
+    const t = await r.text()
+    const ct = r.headers.get('content-type') || ''
+    if (ct.includes('application/json') || t.trimStart().startsWith('{')) {
+      const j = JSON.parse(t) as { error?: string }
+      if (j.error) return j.error
     }
-    const body = (await r.json()) as UploadResponse
-    void refreshCost()
-    showStatus('Transcribed', 'success', body.text)
-    return body.text
-  })
+  } catch {
+    /* fall through to a generic message */
+  }
+  if (r.status === 502 || r.status === 503 || r.status === 504)
+    return `сервер недоступен (${r.status}) — попробуй ещё раз`
+  return `ошибка загрузки (${r.status})`
+}
+
+function uploadAndTranscribe(blob: Blob, recordedAt: string): Promise<string> {
+  const filename = `clip.${extForMime(blob.type || recordMime)}`
+
+  const attempt = async (n: number): Promise<string> => {
+    const fd = new FormData()
+    fd.set('audio', blob, filename)
+    fd.set('recordedAt', recordedAt)
+    fd.set('source', 'online')
+
+    let r: Response
+    try {
+      r = await fetch('/upload', { method: 'POST', body: fd, credentials: 'include' })
+    } catch {
+      // transport-level failure (tunnel/connection dropped) — retry
+      if (n < UPLOAD_MAX_ATTEMPTS) {
+        showStatus(`Сеть нестабильна — повтор ${n}/${UPLOAD_MAX_ATTEMPTS - 1}…`, 'info')
+        await delay(uploadBackoffMs(n))
+        return attempt(n + 1)
+      }
+      throw new Error('сеть недоступна — запись не отправлена')
+    }
+
+    if (r.ok) {
+      const body = (await r.json()) as UploadResponse
+      void refreshCost()
+      showStatus('Transcribed', 'success', body.text)
+      return body.text
+    }
+
+    // 502/503/504 = transient edge/tunnel flap → retry the same blob
+    if ((r.status === 502 || r.status === 503 || r.status === 504) && n < UPLOAD_MAX_ATTEMPTS) {
+      showStatus(`Сервер недоступен — повтор ${n}/${UPLOAD_MAX_ATTEMPTS - 1}…`, 'info')
+      await delay(uploadBackoffMs(n))
+      return attempt(n + 1)
+    }
+
+    throw new Error(await failureMessage(r))
+  }
+
+  return attempt(1)
 }
 
 async function stopRecording() {
