@@ -1,6 +1,6 @@
 [package]
 name = "voice-clip-desktop"
-version = "0.2.0"
+version = "0.2.1"
 description = "Voice Clip — macOS clipboard receiver"
 authors = ["Dmitriy Rudnik"]
 edition = "2021"
