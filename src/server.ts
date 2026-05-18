@@ -295,11 +295,19 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
         try {
           result = await transcribe(bytes, filename)
         } catch (e) {
+          console.error(
+            `[upload] transcription failed user=${authed.user.id} file=${filename} ` +
+              `type=${(audio as Blob).type || '?'} bytes=${bytes.length} src=${source}: ${(e as Error).message}`,
+          )
           return Response.json(
             { error: `transcription failed: ${(e as Error).message}` },
             { status: 502 },
           )
         }
+        console.log(
+          `[upload] ok user=${authed.user.id} file=${filename} ` +
+            `type=${(audio as Blob).type || '?'} bytes=${bytes.length} src=${source} chars=${result.text.length}`,
+        )
 
         const costUsd = result.usage ? calcCostUsd(result.usage) : 0
         const clip = history.append({
