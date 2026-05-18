@@ -9,7 +9,6 @@
     "core:window:allow-show",
     "core:window:allow-set-focus",
     "core:window:allow-create",
-    "core:tray:allow-register-tray-icon-event-handler",
     "core:tray:allow-set-icon",
     "core:tray:allow-set-title",
     "core:tray:allow-set-tooltip",

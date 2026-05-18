@@ -63,14 +63,29 @@ This app ships **unsigned** (Ed25519 update signing only, no Apple
 notarization). First launch: right-click the app → **Open** → confirm the
 Gatekeeper prompt once. Subsequent launches open normally.
 
-## What is NOT in the automated CI gate
+## Verified on macOS (Apple Silicon, Tauri 2.11)
 
-The Rust app cannot be built/signed/smoke-tested in the agent sandbox.
-The following require a manual macOS verification pass:
+- `cargo check` / `cargo tauri build` compile clean (0 warnings); `.app`
+  bundles with the correct Info.plist (voiceclip:// scheme, `LSUIElement`
+  menubar-only, identifier, version) and an embedded `icon.icns`
+- App launches without crashing; `voiceclip://` is registered with
+  LaunchServices and bound to `com.voiceclip.desktop`
+- `cargo test` — 7/7 pass (URL/CSRF parser, backoff bounds, clip JSON)
+- `Cargo.lock` is committed → reproducible CI release builds
 
-- `cargo build` / `cargo tauri build` compiles cleanly
-- `voiceclip://` URL scheme is registered and routes to the running app
-- device token persists in and reads back from the macOS Keychain
-- SSE stream stays connected; reconnect backoff works after a network drop
-- `pbcopy` writes the clip text to the system clipboard
-- right-click → Open clears Gatekeeper on first install
+## Still needs an interactive macOS pass (Phase 3, with the owner)
+
+Inherently can't be automated — done when the owner installs the first
+signed build and pairs:
+
+- Google OAuth round-trip → `voiceclip://callback` deep link delivered
+- device token persists in / reads back from the macOS Keychain (first
+  write prompts for Keychain access on an unsigned binary)
+- SSE stays connected to prod; reconnect backoff after a real network drop
+- end-to-end: phone records → server fan-out → `pbcopy` on this Mac
+- right-click → Open clears Gatekeeper on a *downloaded* (quarantined) DMG
+
+> The local `.dmg` step (`bundle_dmg.sh`) fails on a fresh Mac due to the
+> well-known Finder/AppleScript automation requirement — cosmetic only.
+> CI's `tauri-action` on the GitHub macOS runner produces the real signed
+> universal `.dmg`, so this does not affect releases.
