@@ -34,6 +34,9 @@ jobs:
           releaseName: 'Voice Clip ${{ github.ref_name }}'
           includeUpdaterJson: true
         env:
+          # Baked into the binary at compile time (option_env! in main.rs).
+          # Without this the release pointed at localhost:8080 (bug in 0.2.3).
+          PUBLIC_URL: https://voice.rudifamily.uk
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
