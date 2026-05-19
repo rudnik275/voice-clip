@@ -35,8 +35,12 @@ use sse::{ConnStatus, SseClient};
 /// Server base URL. Baked at build time (`PUBLIC_URL` env) with a sane
 /// localhost dev default. The whole pairing + SSE contract is rooted here.
 fn public_url() -> String {
+    // Baked at COMPILE time. Default to production so a release can never
+    // accidentally ship pointing at localhost (it did in 0.2.3 — CI didn't
+    // set PUBLIC_URL). Local dev overrides:
+    //   PUBLIC_URL=http://localhost:8080 cargo tauri dev
     option_env!("PUBLIC_URL")
-        .unwrap_or("http://localhost:8080")
+        .unwrap_or("https://voice.rudifamily.uk")
         .trim_end_matches('/')
         .to_string()
 }
