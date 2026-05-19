@@ -325,13 +325,17 @@ profileLogout.addEventListener('click', async () => {
 
 let mediaRecorder: MediaRecorder | undefined
 let chunks: Blob[] = []
-// The mic stream and AudioContext are acquired ONCE and kept alive for the
-// whole page session. Re-running getUserMedia per press cost ~1s of latency
-// AND — because teardownAudio() stopped the track right after
-// mediaRecorder.stop() — raced the recorder's final flush, so every few
-// recordings produced an empty (5-byte) blob → server 502. One persistent
-// stream makes start instant and the capture deterministic.
+// The mic stream is kept alive ACROSS quick successive recordings (instant
+// start, no per-press getUserMedia latency) but released after a short idle
+// once a recording ends — otherwise iOS shows the orange "mic in use"
+// indicator for the whole session. The release happens inside onstop AFTER
+// the blob is assembled (NOT right after mediaRecorder.stop(), which used to
+// race the recorder's final flush → empty 5-byte blob → server 502).
 let micStream: MediaStream | undefined
+// Idle-release timer: keep the mic ~MIC_IDLE_RELEASE_MS after a stop so
+// back-to-back records reuse the live stream; then drop it (indicator off).
+let micReleaseTimer: ReturnType<typeof setTimeout> | undefined
+const MIC_IDLE_RELEASE_MS = 1200
 let audioCtx: AudioContext | undefined
 let micSource: MediaStreamAudioSourceNode | undefined
 let analyser: AnalyserNode | undefined
@@ -431,6 +435,29 @@ async function ensureMic(): Promise<MediaStream> {
   return micStream
 }
 
+function cancelMicRelease() {
+  if (micReleaseTimer) {
+    clearTimeout(micReleaseTimer)
+    micReleaseTimer = undefined
+  }
+}
+
+// Actually stop the mic tracks → iOS drops the "mic in use" indicator.
+function releaseMic() {
+  micReleaseTimer = undefined
+  if (recording) return // a new recording started in the grace window
+  if (micStream) for (const t of micStream.getTracks()) t.stop()
+  micStream = undefined
+  micSource = undefined
+}
+
+// Safe to call ONLY once the blob is captured (inside onstop). Defers the
+// track stop by a short idle so a quick re-record keeps the stream live.
+function scheduleMicRelease() {
+  cancelMicRelease()
+  micReleaseTimer = setTimeout(releaseMic, MIC_IDLE_RELEASE_MS)
+}
+
 // A FRESH AudioContext per recording, created inside the user gesture and
 // closed on stop. A persistent context gets auto-suspended by iOS between
 // recordings → the analyser returned silence → the voice pulsation died.
@@ -454,6 +481,7 @@ function startMeters(s: MediaStream) {
 async function startRecording() {
   if (recording) return
   recording = true
+  cancelMicRelease() // re-recording within the idle window → keep the stream
   let s: MediaStream
   try {
     s = await ensureMic()
@@ -637,6 +665,7 @@ async function stopRecording() {
     recBtn.classList.remove('busy')
     recLabel.textContent = 'Tap to record'
     showStatus('Слишком коротко — попробуй ещё раз', 'info')
+    scheduleMicRelease() // mic was acquired but unused — let it go
     return
   }
 
@@ -645,6 +674,8 @@ async function stopRecording() {
     mediaRecorder!.onstop = () => {
       const mime = mediaRecorder!.mimeType || recordMime
       resolve(new Blob(chunks, { type: mime }))
+      // Blob fully assembled — now it's safe to drop the mic (no flush race).
+      scheduleMicRelease()
     }
   })
   mediaRecorder.stop()
