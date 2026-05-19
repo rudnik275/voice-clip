@@ -1,6 +1,6 @@
 [package]
 name = "voice-clip-desktop"
-version = "0.2.2"
+version = "0.2.3"
 description = "Voice Clip — macOS clipboard receiver"
 authors = ["Dmitriy Rudnik"]
 edition = "2021"
@@ -16,9 +16,13 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+# image-png: enables Image::from_bytes(PNG) for the menu-bar tray icon.
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-deep-link = "2"
+# MUST stay paired with deep-link: forwards a voiceclip:// cold-launch to
+# the running instance instead of spawning a stateless new one.
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 tauri-plugin-updater = "2"
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
@@ -26,7 +30,10 @@ serde_json = "1"
 # Blocking reqwest: the SSE read loop runs on its own std thread so a
 # long-lived stream never blocks the Tauri event loop.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
-keyring = "3"
+# keyring 3.x makes the platform store OPT-IN: without a backend feature it
+# silently uses a no-op MOCK store (set_password returns Ok but persists
+# nothing), so the device token never survives → app never pairs.
+keyring = { version = "3", features = ["apple-native"] }
 rand = "0.8"
 
 [features]

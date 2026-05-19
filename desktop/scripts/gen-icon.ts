@@ -195,33 +195,69 @@ function chunk(type: string, data: Uint8Array) {
   return out;
 }
 
-const ihdr = new Uint8Array(13);
-const idv = new DataView(ihdr.buffer);
-idv.setUint32(0, SIZE);
-idv.setUint32(4, SIZE);
-ihdr[8] = 8; // bit depth
-ihdr[9] = 6; // colour type RGBA
-// 10,11,12 = 0 (deflate / adaptive filter / no interlace)
-
-const raw = new Uint8Array(SIZE * (SIZE * 4 + 1));
-for (let y = 0; y < SIZE; y++) {
-  raw[y * (SIZE * 4 + 1)] = 0; // filter: none
-  raw.set(px.subarray(y * SIZE * 4, (y + 1) * SIZE * 4), y * (SIZE * 4 + 1) + 1);
-}
-const idat = deflateSync(raw, { level: 9 });
-
-const sig = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
-const parts = [sig, chunk("IHDR", ihdr), chunk("IDAT", idat), chunk("IEND", new Uint8Array(0))];
-const total = parts.reduce((n, p) => n + p.length, 0);
-const png = new Uint8Array(total);
-let off = 0;
-for (const p of parts) {
-  png.set(p, off);
-  off += p.length;
+function encodePng(w: number, h: number, pix: Uint8Array): Uint8Array {
+  const ihdr = new Uint8Array(13);
+  const idv = new DataView(ihdr.buffer);
+  idv.setUint32(0, w);
+  idv.setUint32(4, h);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 6; // colour type RGBA
+  const raw = new Uint8Array(h * (w * 4 + 1));
+  for (let y = 0; y < h; y++) {
+    raw[y * (w * 4 + 1)] = 0; // filter: none
+    raw.set(pix.subarray(y * w * 4, (y + 1) * w * 4), y * (w * 4 + 1) + 1);
+  }
+  const idat = deflateSync(raw, { level: 9 });
+  const sig = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+  const parts = [
+    sig,
+    chunk("IHDR", ihdr),
+    chunk("IDAT", idat),
+    chunk("IEND", new Uint8Array(0)),
+  ];
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let off = 0;
+  for (const p of parts) {
+    out.set(p, off);
+    off += p.length;
+  }
+  return out;
 }
 
 const outDir = new URL("../src-tauri/icons/", import.meta.url).pathname;
 mkdirSync(outDir, { recursive: true });
-const outPath = outDir + "_source.png";
-await Bun.write(outPath, png);
-console.log(`wrote ${outPath} (${SIZE}×${SIZE}, ${png.length} bytes)`);
+await Bun.write(outDir + "_source.png", encodePng(SIZE, SIZE, px));
+console.log(`wrote _source.png (${SIZE}×${SIZE})`);
+
+// ---- menu-bar template icon: black mic silhouette, transparent bg ----------
+// macOS treats an all-black + alpha image as a template: it auto-inverts
+// for light/dark menu bars and the highlight state.
+const TS = 44; // ~22pt @2x
+const TVB = 24; // reuse the mic viewBox
+const tspan = TS * 0.78; // glyph fills most of the bar height
+const tsc = tspan / TVB;
+const tgx = (u: number) => (TS - tspan) / 2 + u * tsc;
+const tstroke = 2.4 * tsc;
+function trayAlpha(pxv: number, pyv: number): number {
+  const body = sdRoundRect(pxv, pyv, tgx(12), tgx(8), 3 * tsc, 6 * tsc, 3 * tsc);
+  const cradle =
+    sdArc(pxv, pyv, tgx(12), tgx(11), tgx(7) - tgx(0), 0, Math.PI) - tstroke / 2;
+  const stem = sdSegment(pxv, pyv, tgx(12), tgx(18), tgx(12), tgx(22)) - tstroke / 2;
+  const base = sdSegment(pxv, pyv, tgx(8), tgx(22), tgx(16), tgx(22)) - tstroke / 2;
+  return smooth(0.75, -0.75, Math.min(body, cradle, stem, base));
+}
+const tpx = new Uint8Array(TS * TS * 4);
+for (let y = 0; y < TS; y++) {
+  for (let x = 0; x < TS; x++) {
+    let a = 0;
+    for (let sy = 0; sy < SS; sy++) {
+      for (let sx = 0; sx < SS; sx++) {
+        a += trayAlpha(x + (sx + 0.5) / SS, y + (sy + 0.5) / SS);
+      }
+    }
+    const o = (y * TS + x) * 4;
+    tpx[o + 3] = Math.round((255 * a) / (SS * SS)); // RGB stays 0 (black)
+  }
+}
+await Bun.write(outDir + "tray.png", encodePng(TS, TS, tpx));
+console.log(`wrote tray.png (${TS}×${TS} template)`);

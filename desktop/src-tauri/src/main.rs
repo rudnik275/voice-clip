@@ -77,19 +77,10 @@ fn status_str(s: ConnStatus) -> &'static str {
     }
 }
 
-/// Status-aware tray title (shown next to the icon on macOS).
-fn tray_title(s: ConnStatus) -> &'static str {
-    match s {
-        ConnStatus::Connected => "●",
-        ConnStatus::Connecting | ConnStatus::Reconnecting => "◌",
-        ConnStatus::Offline => "○",
-    }
-}
-
-/// Update the tray icon title and tooltip to reflect the current connection state.
+/// Reflect the current connection state in the tray tooltip. The icon
+/// itself is a static mic template (no status glyph in the menu bar).
 fn update_tray(app: &tauri::AppHandle, status: ConnStatus) {
     if let Some(tray) = app.tray_by_id("main") {
-        let _ = tray.set_title(Some(tray_title(status)));
         let tooltip = match status {
             ConnStatus::Connected => "Voice Clip — Connected",
             ConnStatus::Connecting => "Voice Clip — Connecting…",
@@ -120,6 +111,43 @@ fn is_paired() -> bool {
     keychain::load_token().is_some()
 }
 
+/// App data dir (created on demand); falls back to the temp dir.
+fn diag_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
+    let d = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| std::env::temp_dir());
+    let _ = std::fs::create_dir_all(&d);
+    d
+}
+
+/// Persisted CSRF nonce — survives the process boundary so the instance
+/// that receives the voiceclip:// callback can validate it even if it is
+/// not the instance that started pairing (macOS cold-launches a fresh
+/// instance for the URL scheme).
+fn state_file(app: &tauri::AppHandle) -> std::path::PathBuf {
+    diag_dir(app).join("pending_state")
+}
+
+/// Append a line to the deep-link debug log AND stderr. Temporary
+/// instrumentation while the macOS pairing handshake is being stabilised.
+fn dlog(app: &tauri::AppHandle, msg: &str) {
+    use std::io::Write;
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let line = format!("[{ts}] {msg}");
+    eprintln!("{line}");
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(diag_dir(app).join("deeplink-debug.log"))
+    {
+        let _ = writeln!(f, "{line}");
+    }
+}
+
 /// Begin pairing: mint a one-time state, remember it, open the pairing URL
 /// in the user's DEFAULT browser (Google OAuth must run in their real
 /// browser session, not the embedded webview). Returns the URL too so the
@@ -135,6 +163,11 @@ fn begin_pairing(app: tauri::AppHandle, state: State<AppState>) -> Result<String
             .collect()
     };
     *state.pending_state.lock().unwrap() = Some(nonce.clone());
+    // Persist so a different instance can still validate the callback.
+    if let Err(e) = std::fs::write(state_file(&app), &nonce) {
+        dlog(&app, &format!("begin_pairing: state-file write failed: {e}"));
+    }
+    dlog(&app, &format!("begin_pairing: nonce={nonce}"));
     let url = format!("{}/desktop/auth/start?state={}", public_url(), nonce);
     app.opener()
         .open_url(url.clone(), None::<&str>)
@@ -235,33 +268,53 @@ fn show_settings_window(app: &tauri::AppHandle) {
 /// Handle an incoming `voiceclip://callback?token=&state=` deep link:
 /// validate state, persist token, start the SSE worker, flip the UI.
 fn handle_deep_link(app: &tauri::AppHandle, url: &str) {
+    dlog(app, &format!("handle_deep_link: received url={url}"));
     let parsed = match url::form_from(url) {
         Some(p) => p,
         None => {
-            eprintln!("deep-link: unparseable url {url}");
+            dlog(app, &format!("deep-link: unparseable url {url}"));
             return;
         }
     };
     let (Some(token), Some(state)) = (parsed.token, parsed.state) else {
-        eprintln!("deep-link: missing token/state");
+        dlog(app, "deep-link: missing token/state");
         return;
     };
+    dlog(
+        app,
+        &format!("deep-link: parsed state={state} token_len={}", token.len()),
+    );
 
+    // Expected nonce: in-memory first, else the persisted file (the
+    // receiving instance may not be the one that started pairing).
     let app_state = app.state::<AppState>();
-    let expected = app_state.pending_state.lock().unwrap().clone();
-    match expected {
-        Some(exp) if exp == state => {}
+    let mem = app_state.pending_state.lock().unwrap().clone();
+    let from_file = std::fs::read_to_string(state_file(app))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let expected = mem.clone().or_else(|| from_file.clone());
+    dlog(
+        app,
+        &format!(
+            "deep-link: expected mem={mem:?} file={from_file:?} got={state}"
+        ),
+    );
+    match &expected {
+        Some(exp) if *exp == state => {}
         _ => {
-            eprintln!("deep-link: state mismatch — ignoring (possible CSRF)");
+            dlog(app, "deep-link: state mismatch — ignoring (possible CSRF)");
             return;
         }
     }
     *app_state.pending_state.lock().unwrap() = None;
+    let _ = std::fs::remove_file(state_file(app));
 
     if let Err(e) = keychain::store_token(&token) {
-        eprintln!("deep-link: keychain store failed: {e}");
+        dlog(app, &format!("deep-link: keychain store failed: {e}"));
         return;
     }
+    dlog(app, "deep-link: token stored — starting SSE, emitting paired");
 
     start_sse(app);
     let _ = app.emit("paired", ());
@@ -345,10 +398,12 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
         ],
     )?;
 
+    let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
     TrayIconBuilder::with_id("main")
         .menu(&menu)
-        .title(tray_title(ConnStatus::Offline))
-        .tooltip("Voice Clip")
+        .icon(tray_icon)
+        .icon_as_template(true)
+        .tooltip("Voice Clip — Offline")
         .on_menu_event(move |app, event| {
             match event.id.as_ref() {
                 "open-app" => {
@@ -516,6 +571,18 @@ mod url {
 
 fn main() {
     tauri::Builder::default()
+        // MUST be the first plugin. Without it, macOS cold-launches a fresh
+        // app instance for a voiceclip:// callback — that instance has an
+        // empty AppState (pending_state = None), so the CSRF check rejects
+        // the deep link and pairing silently fails. With the "deep-link"
+        // feature, single-instance forwards the URL to the already-running
+        // instance (which holds pending_state) and we just refocus.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             None,
@@ -523,6 +590,14 @@ fn main() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
+        // Closing the window must NOT quit — this is a menu-bar app. Hide
+        // it instead; reopen via the tray "Open Voice Clip" item.
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             is_paired,
@@ -536,20 +611,29 @@ fn main() {
         .setup(|app| {
             let handle = app.handle().clone();
 
+            dlog(&handle, &format!("setup: pid={} starting", std::process::id()));
+
             // Build the tray icon + menu.
             build_tray(&handle)?;
 
             // Cold-start deep link (app launched BY the voiceclip:// URL).
-            if let Ok(Some(urls)) = app.deep_link().get_current() {
-                for u in urls {
-                    handle_deep_link(&handle, u.as_str());
+            match app.deep_link().get_current() {
+                Ok(Some(urls)) => {
+                    dlog(&handle, &format!("setup: get_current() -> {} url(s)", urls.len()));
+                    for u in urls {
+                        handle_deep_link(&handle, u.as_str());
+                    }
                 }
+                Ok(None) => dlog(&handle, "setup: get_current() -> none"),
+                Err(e) => dlog(&handle, &format!("setup: get_current() err: {e}")),
             }
 
             // Warm deep links (app already running).
             let dl_handle = handle.clone();
             app.deep_link().on_open_url(move |event| {
-                for u in event.urls() {
+                let urls: Vec<_> = event.urls();
+                dlog(&dl_handle, &format!("on_open_url fired: {} url(s)", urls.len()));
+                for u in urls {
                     handle_deep_link(&dl_handle, u.as_str());
                 }
             });

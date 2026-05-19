@@ -11,7 +11,11 @@ use std::process::{Command, Stdio};
 /// Pipe `text` into `pbcopy`. Returns an error string on spawn / write /
 /// non-zero-exit failure so the caller can decide whether to retry.
 pub fn pbcopy(text: &str) -> Result<(), String> {
+    // pbcopy decodes stdin using the locale's charset. A GUI app launched
+    // by LaunchServices inherits no LANG/LC_*, so Cyrillic UTF-8 bytes get
+    // mangled into garbage. Force UTF-8 for the child.
     let mut child = Command::new("pbcopy")
+        .env("LC_CTYPE", "UTF-8")
         .stdin(Stdio::piped())
         .spawn()
         .map_err(|e| format!("spawn pbcopy: {e}"))?;
