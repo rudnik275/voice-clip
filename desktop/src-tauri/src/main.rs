@@ -314,15 +314,22 @@ fn handle_deep_link(app: &tauri::AppHandle, url: &str) {
     *app_state.pending_state.lock().unwrap() = None;
     let _ = std::fs::remove_file(state_file(app));
 
-    if let Err(e) = keychain::store_token(&token) {
-        dlog(app, &format!("deep-link: keychain store failed: {e}"));
-        return;
-    }
-    dlog(app, "deep-link: token stored — starting SSE, emitting paired");
-
-    start_sse(app);
-    let _ = app.emit("paired", ());
-    focus_window(app);
+    // keychain::store_token() blocks on a MODAL macOS auth dialog. Deep-link
+    // callbacks run on the Tauri event-loop thread, so doing this inline
+    // froze the whole app while the "Allow" dialog was up ("not responding",
+    // needed a reboot). Run the blocking keychain + SSE work on a worker.
+    let app_bg = app.clone();
+    std::thread::spawn(move || {
+        if let Err(e) = keychain::store_token(&token) {
+            dlog(&app_bg, &format!("deep-link: keychain store failed: {e}"));
+            return;
+        }
+        dlog(&app_bg, "deep-link: token stored — starting SSE, emitting paired");
+        start_sse(&app_bg);
+        let _ = app_bg.emit("paired", ());
+        let app_ui = app_bg.clone();
+        let _ = app_bg.run_on_main_thread(move || focus_window(&app_ui));
+    });
 }
 
 /// Spawn (or respawn) the SSE worker for the stored token.
