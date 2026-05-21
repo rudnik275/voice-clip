@@ -7,6 +7,15 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <title>voice-clip</title>
     <link rel="stylesheet" href="/style.css" />
+    <link rel="modulepreload" href="/app.ts" />
+    <script>
+      // Register the service worker as early as possible so subsequent
+      // opens are served from cache. Failures are silent — the page still
+      // works without a SW, just with the original network-first boot.
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/sw.js').catch(function () {})
+      }
+    </script>
   </head>
   <body>
     <div class="topbar">
@@ -24,7 +33,7 @@
           <circle cx="12" cy="8" r="4" />
           <path d="M4 21v-1a8 8 0 0 1 16 0v1" />
         </svg>
-        <span class="user-pill-name">__NAME__</span>
+        <span class="user-pill-name" id="user-pill-name"></span>
       </button>
     </div>
 

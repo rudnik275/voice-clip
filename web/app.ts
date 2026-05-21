@@ -44,6 +44,40 @@ const profileBackdrop = $<HTMLElement>('profile-backdrop')
 const profileClose = $<HTMLButtonElement>('profile-close')
 const profileLogout = $<HTMLButtonElement>('profile-logout')
 const profileDevices = $<HTMLElement>('profile-devices')
+const userPillName = $<HTMLElement>('user-pill-name')
+
+// The shell HTML carries no user-specific text (see
+// docs/adr/0001-pwa-boot-architecture.md). On boot we paint the cached
+// identity from localStorage immediately, then fetch /me to confirm or
+// refresh. The cache key is namespaced so multiple stored values stay
+// independent of each other.
+const NAME_CACHE_KEY = 'vc:name'
+
+type Me = { id: string; email: string; name: string; picture_url: string | null }
+
+function readCachedName(): string {
+  try {
+    return localStorage.getItem(NAME_CACHE_KEY) || ''
+  } catch {
+    return ''
+  }
+}
+
+function writeCachedName(name: string): void {
+  try {
+    localStorage.setItem(NAME_CACHE_KEY, name)
+  } catch {
+    /* private mode / storage quota — ignore */
+  }
+}
+
+function clearCachedName(): void {
+  try {
+    localStorage.removeItem(NAME_CACHE_KEY)
+  } catch {
+    /* ignore */
+  }
+}
 
 // Detect desktop (no coarse pointer = no touch screen) once at load.
 // Live re-detection on resize is NOT required — spec says load-time only.
@@ -317,7 +351,11 @@ profileLogout.addEventListener('click', async () => {
   try {
     await fetch('/logout', { method: 'POST', credentials: 'include' })
   } finally {
-    window.location.href = '/'
+    clearCachedName()
+    // Send the user straight to /login — going to `/` would briefly
+    // flash the cached home shell before /me 401-redirects, which is
+    // jarring right after they hit "Sign out".
+    window.location.href = '/login'
   }
 })
 
@@ -744,6 +782,21 @@ recBtn.addEventListener('click', () => {
   else void startRecording()
 })
 
+// Pre-warm the mic the moment the finger lands on the record button.
+// `touchstart` fires 50-200ms before `click` on iOS, so the
+// getUserMedia round-trip overlaps the click pipeline. If the click
+// follows, startRecording() calls cancelMicRelease() and uses the
+// warm stream. If the click never comes (user slid off the button),
+// the scheduled release here drops the stream after the same
+// MIC_IDLE_RELEASE_MS window — so the iOS "mic in use" indicator
+// turns off and the mic isn't held open indefinitely. Failures are
+// silent: this is a hint, the real error reporting happens inside
+// startRecording.
+recBtn.addEventListener('touchstart', () => {
+  if (recording || transcribing) return
+  ensureMic().then(() => scheduleMicRelease()).catch(() => {})
+}, { passive: true })
+
 recPause.addEventListener('click', () => togglePause())
 
 // ---- boot ----
@@ -755,4 +808,48 @@ if (isDesktop) {
   downloadCta.hidden = false
 }
 
-void refreshCost()
+// Paint the user pill from localStorage instantly — for the common
+// returning-user case there is zero perceptible delay between shell
+// paint and personalized UI. /me runs in the background to confirm or
+// refresh.
+const cachedName = readCachedName()
+if (cachedName) userPillName.textContent = cachedName
+
+async function bootAuth(): Promise<void> {
+  let r: Response
+  try {
+    r = await fetch('/me', { credentials: 'include' })
+  } catch {
+    // Offline or transient network blip. The cached name is already
+    // on screen; nothing else to do. /upload itself will retry/fail
+    // visibly if the user actually tries to record.
+    return
+  }
+  if (r.status === 401) {
+    clearCachedName()
+    // No valid session — full navigation to the login page. We replace
+    // (not assign) so the back button doesn't bounce the user back into
+    // the unauthenticated shell.
+    window.location.replace('/login')
+    return
+  }
+  if (!r.ok) return
+  let me: Me
+  try {
+    me = (await r.json()) as Me
+  } catch {
+    return
+  }
+  if (me.name && me.name !== cachedName) {
+    writeCachedName(me.name)
+    userPillName.textContent = me.name
+  } else if (!cachedName && me.name) {
+    writeCachedName(me.name)
+    userPillName.textContent = me.name
+  }
+  // Cost pill is non-critical for the first paint, so we kick it off
+  // only after the auth check returned green.
+  void refreshCost()
+}
+
+void bootAuth()

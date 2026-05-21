@@ -51,7 +51,9 @@ describe('asset cache busting', () => {
   })
 
   test('HTML is no-store and references versioned assets only', async () => {
-    const r = await fetch(`${baseUrl}/`) // anon → login.html via htmlResponse
+    // `/` always returns the static home shell now (auth is resolved
+    // client-side via /me — see docs/adr/0001-pwa-boot-architecture.md).
+    const r = await fetch(`${baseUrl}/`)
     expect(r.status).toBe(200)
     expect(r.headers.get('cache-control')).toBe('no-store')
 
@@ -61,6 +63,31 @@ describe('asset cache busting', () => {
     expect(m).not.toBeNull()
     // …and NO bare /style.css" (which Cloudflare would cache stale)
     expect(html).not.toContain('href="/style.css"')
+  })
+
+  test('/sw.js is served with version stamped + no-cache + service-worker-allowed', async () => {
+    const r = await fetch(`${baseUrl}/sw.js`)
+    expect(r.status).toBe(200)
+    expect(r.headers.get('content-type')).toContain('javascript')
+    // Must re-validate so updates propagate; the body changes whenever
+    // ASSET_VER changes, which the browser detects byte-for-byte.
+    expect(r.headers.get('cache-control')).toBe('no-cache')
+    // Required for the SW to control the entire origin.
+    expect(r.headers.get('service-worker-allowed')).toBe('/')
+    const body = await r.text()
+    // The build-time __ASSET_VER__ placeholder is replaced with the
+    // real 10-char hex hash, baked into the VERSION constant.
+    expect(body).not.toContain('__ASSET_VER__')
+    expect(body).toMatch(/const VERSION = '[a-f0-9]{10}'/)
+  })
+
+  test('home shell preloads the JS bundle (modulepreload) and registers the SW', async () => {
+    const r = await fetch(`${baseUrl}/`)
+    const html = await r.text()
+    // Browser starts fetching app.ts in parallel with HTML parsing.
+    expect(html).toMatch(/<link rel="modulepreload" href="\/app\.ts[^"]*"\s*\/?>/)
+    // Inline registration so we don't wait for the bundle to parse.
+    expect(html).toContain("navigator.serviceWorker.register('/sw.js')")
   })
 
   test('asset version matches the served bundle (stable hash)', async () => {
