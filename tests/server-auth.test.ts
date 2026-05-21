@@ -86,9 +86,12 @@ describe('server: end-to-end Google OAuth + sessions + /me', () => {
     expect(await r.text()).toBe(APP_VERSION)
   })
 
-  test('GET / unauthenticated → login page (200, has Sign in with Google)', async () => {
+  test('GET /login → sign-in page (200, has Sign in with Google)', async () => {
+    // The Google OAuth start button lives on /login now — the unauth
+    // landing page. `/` itself is the static home shell. See
+    // docs/adr/0001-pwa-boot-architecture.md.
     await startWith(makeGoogleFetcher({ sub: 'g1', email: 'alice@example.com', name: 'Alice' }))
-    const r = await fetch(`${baseUrl}/`, { redirect: 'manual' })
+    const r = await fetch(`${baseUrl}/login`, { redirect: 'manual' })
     expect(r.status).toBe(200)
     const html = await r.text()
     expect(html.toLowerCase()).toContain('sign in with google')
@@ -211,7 +214,11 @@ describe('server: end-to-end Google OAuth + sessions + /me', () => {
     expect(me.status).toBe(401)
   })
 
-  test('GET / authenticated → stub page renders user name', async () => {
+  test('GET / always returns the static shell; user name comes from /me', async () => {
+    // Per docs/adr/0001-pwa-boot-architecture.md the home shell is
+    // identical for every user — the name is hydrated client-side by
+    // calling /me. So we assert the shell renders + /me reports the
+    // signed-in user.
     await startWith(makeGoogleFetcher({ sub: 'g1', email: 'alice@example.com', name: 'Alice' }))
 
     const startR = await fetch(`${baseUrl}/auth/google/start`, { redirect: 'manual' })
@@ -229,7 +236,32 @@ describe('server: end-to-end Google OAuth + sessions + /me', () => {
     })
     expect(home.status).toBe(200)
     const html = await home.text()
-    expect(html).toContain('Alice')
+    // Shell is identical regardless of auth: it MUST NOT carry user data.
+    expect(html).not.toContain('Alice')
+    // It DOES carry the empty placeholder span the client hydrates.
+    expect(html).toContain('id="user-pill-name"')
+
+    const me = await fetch(`${baseUrl}/me`, {
+      headers: { cookie: `session=${sessionToken}` },
+    })
+    expect(me.status).toBe(200)
+    const body = (await me.json()) as { name: string }
+    expect(body.name).toBe('Alice')
+  })
+
+  test('GET / unauthenticated also returns the static shell (client redirects to /login)', async () => {
+    await startWith(makeGoogleFetcher({ sub: 'g1', email: 'alice@example.com', name: 'Alice' }))
+    // No session cookie.
+    const home = await fetch(`${baseUrl}/`)
+    expect(home.status).toBe(200)
+    const html = await home.text()
+    expect(html).toContain('id="user-pill-name"')
+    // The OAuth button is on /login, NOT on the shell.
+    expect(html).not.toContain('/auth/google/start')
+
+    const login = await fetch(`${baseUrl}/login`)
+    expect(login.status).toBe(200)
+    expect(await login.text()).toContain('/auth/google/start')
   })
 
   test('session persists across multiple requests (refresh-on-access)', async () => {

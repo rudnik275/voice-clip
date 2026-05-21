@@ -177,6 +177,7 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
   const homeTplRaw = await readWebFile('home.html')
   const styleCss = await readWebFile('style.css')
   const manifestJson = await readWebFile('manifest.webmanifest')
+  const swJsRaw = await readWebFile('sw.js')
 
   // Bundle + transpile the browser entrypoint once at boot. Bun strips TS
   // types and produces an ES module the browser can load directly via
@@ -184,7 +185,7 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
   const appBuild = await Bun.build({
     entrypoints: [join(WEB_DIR, 'app.ts')],
     target: 'browser',
-    minify: false,
+    minify: true,
   })
   const appJs = appBuild.success ? await appBuild.outputs[0]!.text() : ''
   if (!appBuild.success) {
@@ -192,26 +193,30 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
     console.error('web/app.ts build failed:', appBuild.logs)
   }
 
-  // Versioned asset URLs = a content hash of CSS+JS. HTML is served
-  // `no-store` and always points at /style.css?v=HASH & /app.ts?v=HASH,
-  // while those assets are cached `immutable`. A deploy that changes either
-  // file changes the hash → the URL → busting BOTH the browser and the
-  // Cloudflare edge cache. Without this, Cloudflare's default 4h static
-  // cache kept serving stale CSS against fresh HTML → broken layout after
-  // every deploy (white pause button / invisible loader, etc.).
-  const ASSET_VER = createHash('sha1').update(styleCss).update(appJs).digest('hex').slice(0, 10)
+  // Versioned asset URLs = a content hash that covers every byte the SW
+  // precaches: CSS, JS bundle, SW file itself, plus APP_VERSION (which
+  // gets stamped into the HTML at render time). Any change → new hash →
+  // new asset URLs AND new SW byte content → standard SW update flow
+  // installs the new version, which activates the next time all PWA
+  // clients close (= next foreground on iOS). HTML is served `no-store`
+  // so a deploy is never blocked by a stale Cloudflare/edge HTML cache;
+  // CSS and JS are `immutable` because their URL changes per hash.
+  const ASSET_VER = createHash('sha1')
+    .update(styleCss)
+    .update(appJs)
+    .update(swJsRaw)
+    .update(APP_VERSION)
+    .digest('hex')
+    .slice(0, 10)
   const withAssetVer = (html: string): string =>
     html
       .replaceAll('/style.css"', `/style.css?v=${ASSET_VER}"`)
       .replaceAll('/app.ts"', `/app.ts?v=${ASSET_VER}"`)
 
   const loginHtml = withAssetVer(loginTplRaw)
-  const homeTpl = withAssetVer(homeTplRaw)
+  const homeHtmlStatic = withAssetVer(homeTplRaw).replace('__APP_VERSION__', APP_VERSION)
   const accessDeniedTpl = withAssetVer(accessDeniedTplRaw)
-
-  function renderHome(name: string): string {
-    return homeTpl.replace('__NAME__', escapeHtml(name)).replace('__APP_VERSION__', APP_VERSION)
-  }
+  const swJs = swJsRaw.replaceAll('__ASSET_VER__', ASSET_VER)
 
   function renderAccessDenied(email: string): string {
     return accessDeniedTpl
@@ -263,6 +268,22 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
             'content-type': 'text/javascript; charset=utf-8',
             // URL is content-versioned (?v=hash) → safe to cache forever.
             'cache-control': 'public, max-age=31536000, immutable',
+          },
+        })
+      }
+      // The service worker MUST be served from the site root (its scope
+      // is `/`) and the browser re-fetches it on every navigation to
+      // detect updates. We serve it with `no-cache` so the browser
+      // always re-validates; the bytes themselves change whenever
+      // ASSET_VER changes, triggering the standard install/activate
+      // lifecycle. See docs/adr/0001-pwa-boot-architecture.md.
+      if (method === 'GET' && pathname === '/sw.js') {
+        return new Response(swJs, {
+          status: 200,
+          headers: {
+            'content-type': 'text/javascript; charset=utf-8',
+            'cache-control': 'no-cache',
+            'service-worker-allowed': '/',
           },
         })
       }
@@ -694,11 +715,22 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
       }
 
       // ---- / (root) ----
+      // The home shell is static and identical for every user. Auth is
+      // resolved client-side by app.ts via /me — on 401 the client
+      // redirects to /login. This lets the service worker precache `/`
+      // as one immutable blob and serve it offline-first. See
+      // docs/adr/0001-pwa-boot-architecture.md for the full design.
       if (pathname === '/') {
         if (method !== 'GET') return new Response('Method Not Allowed', { status: 405 })
-        const authed = resolveUserFromRequest(req, sessions, users)
-        if (!authed) return htmlResponse(loginHtml)
-        return htmlResponse(renderHome(authed.user.name))
+        return htmlResponse(homeHtmlStatic)
+      }
+      // Dedicated login URL. Anonymous users land here via the client's
+      // 401-redirect; the OAuth start link on this page kicks off the
+      // existing /auth/google/start flow, whose callback puts the user
+      // back at `/`.
+      if (pathname === '/login') {
+        if (method !== 'GET') return new Response('Method Not Allowed', { status: 405 })
+        return htmlResponse(loginHtml)
       }
 
       return new Response('Not Found', { status: 404 })
