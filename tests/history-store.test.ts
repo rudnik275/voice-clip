@@ -103,6 +103,21 @@ describe('history-store (SQLite, monotonic seq)', () => {
     expect(replay[1]?.seq).toBe(a3.seq)
   })
 
+  test('getBySeq returns the owner clip and undefined for a missing seq', () => {
+    const { history, alice } = setup()
+    const a1 = append(history, alice.id, 'a1', '2026-05-17T10:00:00.000Z')
+    const got = history.getBySeq(alice.id, a1.seq)
+    expect(got?.text).toBe('a1')
+    expect(got?.seq).toBe(a1.seq)
+    expect(history.getBySeq(alice.id, a1.seq + 999)).toBeUndefined()
+  })
+
+  test('getBySeq is owner-scoped — Bob cannot read an Alice clip by seq', () => {
+    const { history, alice, bob } = setup()
+    const a1 = append(history, alice.id, 'alice-secret', '2026-05-17T10:00:00.000Z')
+    expect(history.getBySeq(bob.id, a1.seq)).toBeUndefined()
+  })
+
   test('clear(userId) deletes that user history only', () => {
     const { history, alice, bob } = setup()
     append(history, alice.id, 'a1', '2026-05-17T10:00:00.000Z')

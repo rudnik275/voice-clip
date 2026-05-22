@@ -156,6 +156,119 @@ describe('/upload fan-out to a user devices via live-bus', () => {
     }
   })
 
+  test('/clip/copy re-sends a past history clip to the paired Macs', async () => {
+    db = openDb(':memory:')
+    const liveBus = createLiveBus()
+    const deps: ServerDeps = {
+      dataDir: dir,
+      port: 0,
+      useTls: false,
+      allowlist: ['alice@example.com'],
+      googleClientId: CLIENT_ID,
+      googleClientSecret: CLIENT_SECRET,
+      googleFetcher: makeGoogleFetcher({ sub: 'g1', email: 'alice@example.com', name: 'Alice' }),
+      db,
+      liveBus,
+      transcribe: async (): Promise<TranscriptionResult> => ({
+        text: 'старая запись',
+        usage: { audioTokens: 1000, textTokens: 0, outputTokens: 0 },
+      }),
+    }
+    server = await startServer(deps)
+    baseUrl = `http://localhost:${server.port}`
+    server.stop()
+    server = await startServer({ ...deps, publicUrl: baseUrl })
+    baseUrl = `http://localhost:${server.port}`
+
+    const token = await signIn(baseUrl)
+
+    // Create a history clip via /upload, capture its seq.
+    const up = await fetch(`${baseUrl}/upload`, {
+      method: 'POST',
+      headers: { cookie: `session=${token}` },
+      body: audioForm('2026-05-17T10:00:00.000Z'),
+    })
+    expect(up.status).toBe(200)
+    const { seq } = (await up.json()) as { seq: number }
+
+    // Pair a Mac and give it a live SSE subscription AFTER the upload, so the
+    // only frame it can see is the /clip/copy re-send.
+    const users = createUsersStore(db)
+    const user = users.upsertByGoogleSub({ sub: 'g1', email: 'alice@example.com', name: 'Alice' })
+    const devices = createDevicesStore(db)
+    const mac = devices.create(user.id, 'Mac A')
+    const m = mockController()
+    liveBus.subscribe(mac.id, m.controller)
+
+    const copyR = await fetch(`${baseUrl}/clip/copy`, {
+      method: 'POST',
+      headers: { cookie: `session=${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ seq }),
+    })
+    expect(copyR.status).toBe(200)
+    expect(await copyR.json()).toEqual({ ok: true, devices: 1 })
+
+    const dataFrame = m.frames.find((f) => f.startsWith('data: '))
+    expect(dataFrame).toBeTruthy()
+    const payload = JSON.parse(dataFrame!.slice('data: '.length).trim()) as {
+      seq: number
+      text: string
+      source: string
+    }
+    expect(payload.seq).toBe(seq)
+    expect(payload.text).toBe('старая запись')
+    expect(payload.source).toBe('online')
+  })
+
+  test('/clip/copy with an unknown seq → 404, and another user seq is not found', async () => {
+    db = openDb(':memory:')
+    const deps: ServerDeps = {
+      dataDir: dir,
+      port: 0,
+      useTls: false,
+      allowlist: ['alice@example.com'],
+      googleClientId: CLIENT_ID,
+      googleClientSecret: CLIENT_SECRET,
+      googleFetcher: makeGoogleFetcher({ sub: 'g1', email: 'alice@example.com', name: 'Alice' }),
+      db,
+    }
+    server = await startServer(deps)
+    baseUrl = `http://localhost:${server.port}`
+    server.stop()
+    server = await startServer({ ...deps, publicUrl: baseUrl })
+    baseUrl = `http://localhost:${server.port}`
+    const token = await signIn(baseUrl)
+
+    const r = await fetch(`${baseUrl}/clip/copy`, {
+      method: 'POST',
+      headers: { cookie: `session=${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ seq: 99999 }),
+    })
+    expect(r.status).toBe(404)
+  })
+
+  test('/clip/copy without a session → 401', async () => {
+    db = openDb(':memory:')
+    const deps: ServerDeps = {
+      dataDir: dir,
+      port: 0,
+      useTls: false,
+      allowlist: ['alice@example.com'],
+      googleClientId: CLIENT_ID,
+      googleClientSecret: CLIENT_SECRET,
+      googleFetcher: makeGoogleFetcher({ sub: 'g1', email: 'alice@example.com', name: 'Alice' }),
+      db,
+    }
+    server = await startServer(deps)
+    baseUrl = `http://localhost:${server.port}`
+    const r = await fetch(`${baseUrl}/clip/copy`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ seq: 1 }),
+    })
+    expect(r.status).toBe(401)
+  })
+
   test('/events/ack with a valid device token bumps last_seen_at', async () => {
     let clock = 1_700_000_000_000
     db = openDb(':memory:')

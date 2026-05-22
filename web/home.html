@@ -80,7 +80,9 @@
         <div class="history-head">
           <button class="ghost-btn" id="history-close" type="button">Close</button>
           <h2>History</h2>
-          <button class="ghost-btn danger" id="history-clear" type="button">Clear</button>
+          <!-- Invisible twin of the Close button — keeps <h2> centered in the
+               flex row now that the Clear action is gone. -->
+          <span class="ghost-btn" aria-hidden="true" style="visibility: hidden">Close</span>
         </div>
         <div class="history-list" id="history-list"></div>
       </div>

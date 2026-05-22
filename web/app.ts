@@ -35,7 +35,6 @@ const historyBtn = $<HTMLButtonElement>('history-btn')
 const historyModal = $<HTMLElement>('history-modal')
 const historyList = $<HTMLElement>('history-list')
 const historyClose = $<HTMLButtonElement>('history-close')
-const historyClear = $<HTMLButtonElement>('history-clear')
 const historyBackdrop = $<HTMLElement>('history-backdrop')
 const downloadCta = $<HTMLAnchorElement>('download-cta')
 const userPill = $<HTMLElement>('user-pill')
@@ -164,11 +163,36 @@ function renderClip(clip: HistoryClip): HTMLElement {
   copyBtn.type = 'button'
   copyBtn.textContent = 'Copy'
   copyBtn.addEventListener('click', async () => {
+    // A plain navigator.clipboard.writeText() only reaches THIS device's
+    // clipboard (the tablet/phone doing the tapping) — it never gets to the
+    // Mac. The Mac receives clips over the daemon SSE stream, so re-sending
+    // a history clip means asking the server to fan it out, exactly like a
+    // fresh /upload does. We still write the local clipboard best-effort so
+    // copying on the same device keeps working.
+    void navigator.clipboard?.writeText(clip.text).catch(() => {})
+    copyBtn.disabled = true
     try {
-      await navigator.clipboard.writeText(clip.text)
-      showStatus('Copied', 'success')
+      const r = await fetch('/clip/copy', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ seq: clip.seq }),
+      })
+      if (!r.ok) {
+        showStatus('Copy failed', 'error')
+        return
+      }
+      const body = (await r.json()) as { ok: boolean; devices: number }
+      if (body.devices > 0) {
+        showStatus(body.devices === 1 ? 'Sent to your Mac' : 'Sent to your Macs', 'success')
+      } else {
+        // No paired Mac — the text is on this device's clipboard only.
+        showStatus('Copied — pair a Mac to paste there', 'info')
+      }
     } catch {
       showStatus('Copy failed', 'error')
+    } finally {
+      copyBtn.disabled = false
     }
   })
   actions.append(copyBtn)
@@ -229,16 +253,6 @@ function closeHistory() {
 historyBtn.addEventListener('click', openHistory)
 historyClose.addEventListener('click', closeHistory)
 historyBackdrop.addEventListener('click', closeHistory)
-historyClear.addEventListener('click', async () => {
-  if (!confirm('Clear all your recordings? Cost totals are kept.')) return
-  const r = await fetch('/history', { method: 'DELETE', credentials: 'include' })
-  if (r.ok) {
-    showStatus('History cleared', 'success')
-    void loadHistory(true)
-  } else {
-    showStatus('Clear failed', 'error')
-  }
-})
 
 // ---- profile modal (paired devices + sign out) ----
 

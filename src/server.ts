@@ -430,6 +430,53 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
         })
       }
 
+      // ---- /clip/copy (session auth) ----
+      // Re-send a past clip from the history modal to the user's paired Macs.
+      // The PWA-local navigator.clipboard write only reaches the tablet doing
+      // the tapping; this route runs the SAME fan-out as /upload so the text
+      // actually lands on the Mac. Body: { seq }. Returns { ok, devices } —
+      // `devices` is how many Macs got it (0 → tell the user to pair one).
+      if (pathname === '/clip/copy') {
+        if (method !== 'POST') return new Response('Method Not Allowed', { status: 405 })
+        const authed = resolveUserFromRequest(req, sessions, users)
+        if (!authed) return unauthorized()
+
+        let parsed: unknown
+        try {
+          parsed = await req.json()
+        } catch {
+          return Response.json({ error: 'expected JSON body' }, { status: 400 })
+        }
+        const seq =
+          parsed && typeof parsed === 'object' && typeof (parsed as { seq?: unknown }).seq === 'number'
+            ? (parsed as { seq: number }).seq
+            : undefined
+        if (seq === undefined) {
+          return Response.json({ error: 'missing seq' }, { status: 400 })
+        }
+        const clip = history.getBySeq(authed.user.id, seq)
+        if (!clip) {
+          return Response.json({ error: 'not found' }, { status: 404 })
+        }
+
+        // Same fan-out shape as /upload. `source: 'online'` because this is
+        // an explicit user action — the Mac should pbcopy it unconditionally,
+        // never treat it like a stale offline replay.
+        const clipPayload = {
+          seq: clip.seq,
+          text: clip.text,
+          recordedAt: clip.recordedAt,
+          source: 'online',
+          costUsd: clip.costUsd,
+        }
+        const macs = devices.list(authed.user.id)
+        for (const d of macs) {
+          const live = liveBus.publish(d.id, clipPayload)
+          if (!live) pendingDeliveries.enqueue(d.id, clip.seq)
+        }
+        return Response.json({ ok: true, devices: macs.length })
+      }
+
       // ---- /devices (session auth) ----
       // The PWA profile modal lists the user's paired Macs. `label` is the
       // device_name the Tauri app reported at pairing (may be null).
