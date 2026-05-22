@@ -80,6 +80,10 @@ export interface HistoryStore {
   append(input: AppendInput): HistoryClip
   list(userId: string, opts: ListOptions): HistoryPage
   listSince(userId: string, seq: number): HistoryClip[]
+  // Single clip by its global seq, scoped to the owner — undefined if the
+  // seq does not exist or belongs to another user. Used by /clip/copy to
+  // re-send a past clip to the user's Macs.
+  getBySeq(userId: string, seq: number): HistoryClip | undefined
   clear(userId: string): void
 }
 
@@ -98,6 +102,9 @@ export function createHistoryStore(db: DB, now: () => number = Date.now): Histor
   )
   const sinceStmt = db.query<HistoryRow, [string, number]>(
     `SELECT * FROM history WHERE user_id = ? AND seq > ? ORDER BY seq ASC`,
+  )
+  const bySeqStmt = db.query<HistoryRow, [string, number]>(
+    `SELECT * FROM history WHERE user_id = ? AND seq = ?`,
   )
   const clearStmt = db.prepare('DELETE FROM history WHERE user_id = ?')
 
@@ -138,6 +145,11 @@ export function createHistoryStore(db: DB, now: () => number = Date.now): Histor
 
     listSince(userId: string, seq: number): HistoryClip[] {
       return sinceStmt.all(userId, seq).map(rowToClip)
+    },
+
+    getBySeq(userId: string, seq: number): HistoryClip | undefined {
+      const row = bySeqStmt.get(userId, seq)
+      return row ? rowToClip(row) : undefined
     },
 
     clear(userId: string): void {
