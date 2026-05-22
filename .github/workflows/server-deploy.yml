@@ -51,10 +51,7 @@ jobs:
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
 
-      # Rollout is not done from CI. The VPS pulls this image:
-      #   - first deploy:  ./scripts/bootstrap-deploy.sh (synchronous)
-      #   - subsequent:    Watchtower auto-rolls (label-opt-in, 6h poll)
-      # so no SSH private key ever has to live in GitHub secrets.
+      # The `deploy` job below rolls this image onto the VPS synchronously.
       - name: Build + push image
         uses: docker/build-push-action@v7
         with:
@@ -66,3 +63,63 @@ jobs:
             ghcr.io/rudnik275/voice-clip:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # CI-push deploy. The merge to master IS the deploy: this job SSHes to the
+  # VPS, rolls the freshly-pushed image, health-gates it, and rolls back on
+  # failure. If anything goes wrong the workflow run goes red immediately —
+  # no silent gap, no VPS-side daemon to babysit. (Replaced the old
+  # Watchtower pull model, which silently never ran.) Mirrors the deploy job
+  # in the valorant-community-bot repo.
+  deploy:
+    name: Deploy to VPS
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Pull + restart voice-clip
+        uses: appleboy/ssh-action@v1
+        env:
+          GH_ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: GH_ACTOR,GH_TOKEN
+          script: |
+            echo "$GH_TOKEN" | docker login ghcr.io -u "$GH_ACTOR" --password-stdin
+            PREV_IMAGE=$(docker inspect --format '{{.Image}}' voice-clip 2>/dev/null || echo "none")
+            echo "$PREV_IMAGE" > /opt/voice-clip/.last-image-id
+            cd /opt/voice-clip && docker compose -f docker-compose.prod.yml pull voice-clip \
+              && docker compose -f docker-compose.prod.yml up -d --no-deps voice-clip
+
+      - name: Health-gate (60s poll)
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            for i in $(seq 1 12); do
+              status=$(docker inspect --format '{{.State.Health.Status}}' voice-clip 2>/dev/null || echo "none")
+              if [ "$status" = "healthy" ]; then echo "✓ healthy"; exit 0; fi
+              sleep 5
+            done
+            echo "✗ health timeout after 60s"; exit 1
+
+      - name: Rollback on failure
+        if: failure()
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            PREV=$(cat /opt/voice-clip/.last-image-id 2>/dev/null || echo "none")
+            if [ "$PREV" != "none" ] && [ -n "$PREV" ]; then
+              docker tag "$PREV" ghcr.io/rudnik275/voice-clip:latest
+              cd /opt/voice-clip && docker compose -f docker-compose.prod.yml up -d --no-deps voice-clip
+            else
+              echo "no previous image to rollback to"
+            fi

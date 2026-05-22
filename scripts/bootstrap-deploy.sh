@@ -21,8 +21,9 @@
 #      (idempotent) and restarts cloudflared.
 #   6. docker compose pull + up -d  (first deploy, synchronous).
 #   7. Polls https://voice.rudifamily.uk/version until healthy.
-# Subsequent deploys: just `git push` — Watchtower auto-rolls (6h poll), or
-# `./scripts/redeploy.sh` for an instant roll.
+# Subsequent deploys: just `git push master` — the `deploy` job in
+# .github/workflows/server-deploy.yml rolls + health-gates the image.
+# `./scripts/redeploy.sh` is the manual fallback if CI is unavailable.
 #
 # Secrets: this script runs in YOUR terminal. It NEVER cats/echoes .env or any
 # secret value — only key NAMES and SET/MISSING status — so its output is safe
@@ -106,12 +107,12 @@ if ! grep -qE "^PUBLIC_URL=${PUBLIC_URL}$" .env; then
 fi
 ok ".env has all v2 keys"
 
-# ─── 3. GHCR package must be Public (Watchtower + VPS pull need it) ─────────
+# ─── 3. GHCR package must be Public (the VPS pulls it anonymously) ─────────
 say "GHCR package visibility"
 cat <<EOF
-The repo is private, so ghcr.io/rudnik275/voice-clip is private too. The VPS
-and Watchtower pull anonymously, so the *package* must be Public (the image
-has no secrets — those live in .env on the VPS). Your gh token has no packages
+The repo is private, so ghcr.io/rudnik275/voice-clip is private too. The first
+deploy here pulls anonymously, so the *package* must be Public (the image has
+no secrets — those live in .env on the VPS). Your gh token has no packages
 scope, so flip it by hand (one-time, ~15s):
 
   ${GHCR_SETTINGS_URL}
@@ -198,12 +199,7 @@ done
 
 if [ -n "${DEPLOYED}" ]; then
   ok "LIVE — ${PUBLIC_URL}/version → ${DEPLOYED}"
-  WT=$(ssh "${SSH_OPTS[@]}" "${T}" "docker ps --format '{{.Names}}'" 2>/dev/null | grep -qx watchtower && echo yes || echo no)
-  if [ "$WT" = yes ]; then
-    ok "Watchtower running → future 'git push master' auto-rolls (≤6h); ./scripts/redeploy.sh for instant"
-  else
-    warn "Watchtower NOT running — future deploys need ./scripts/redeploy.sh (or start the shared watchtower from valorant-comunity-bot/infra/_compose/watchtower)"
-  fi
+  ok "Future deploys: push to master → the server-deploy 'deploy' job rolls it automatically."
   cat <<EOF
 
 Next: open ${PUBLIC_URL} → "Sign in with Google".

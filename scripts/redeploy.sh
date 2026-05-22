@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# redeploy.sh — pull the latest image + restart, without waiting for the 6h
-# Watchtower poll. Use after a `git push master` when you want it live now.
+# redeploy.sh — manual emergency roll: pull the latest image + restart.
+#
+# Normal deploys are automatic: a push to master runs the `deploy` job in
+# .github/workflows/server-deploy.yml, which rolls the image and health-gates
+# it. Use this script only when CI itself is unavailable and you need to roll
+# by hand from your Mac.
 #
 # Usage:
 #   ./scripts/redeploy.sh                       # prompts for the VPS host
