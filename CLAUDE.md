@@ -145,15 +145,21 @@ src/
                             this is a no-op since the container has no pbcopy
 
 web/
-  index.html                PWA entry; topbar (history btn + total pill + user pill), main
-                            (record button, result), history modal, user menu modal
-  app.ts                    /me check on load (401 → /signup-needed redirect), recording, IndexedDB
-                            queue, drain, history rendering, SW registration, user menu
-                            (Logout, "Подключить Mac" copies the daemon-install curl command)
-  signup.html               self-contained form for /signup/:invite
-  signup-needed.html        self-contained "you need an invite link" page
-  style.css                 design tokens + components (Liquid Glass)
+  home.html                 PWA entry (authed shell). Topbar (history btn + user pill),
+                            main (record button), history modal, profile modal
+  app.ts                    /me check on load (401 → /login redirect), recording,
+                            history rendering, SW registration, profile menu (sign out,
+                            paired devices, UI sounds toggle)
+  sounds.ts                 Web Audio synth module — 8 UI sounds (start/stop/pause/resume,
+                            success bell, error buzzer, copy pop, modal swoosh).
+                            No .wav/.mp3 assets. Mute toggle persisted in localStorage.
+  login.html                self-contained sign-in page (Google OAuth entry)
+  access-denied.html        self-contained "no access" page (daemon download w/o valid token)
+  style.css                 design tokens + components (Neo-Brutalism: cream + red + violet,
+                            thick black borders, hard offset shadows, mechanical press).
+                            See docs/adr/0002-neo-brutalism-design-system.md
   sw.js                     service worker — cache-first for shell, passthrough for API
+  manifest.webmanifest      PWA manifest (icon set, theme color, display mode)
   tsconfig.json             adds DOM lib (separate from server's tsconfig)
 
 daemon/
@@ -232,23 +238,28 @@ Clients send `recordedAt` ISO timestamp on every upload — used to sort history
 
 ## Design tokens (style.css `:root`)
 
-- Backgrounds: `--bg-0` (#07070b), `--bg-1` (#0c0c14)
-- Text: `--fg` (#f1f1f7), `--muted` (#8b8b9c)
-- Glass: `--glass-bg` (white at 0.045), `--glass-border` (white at 0.10), strong borders 0.18
-- Idle accent gradient: `--accent-a` #7383ff → `--accent-b` #b15eff
-- Recording state: `--rec-a` #ff5577 → `--rec-b` #ff7a4f
-- `--shadow-deep` for floating elements
+See [docs/adr/0002-neo-brutalism-design-system.md](docs/adr/0002-neo-brutalism-design-system.md) for the full rationale.
 
-Typography: SF Pro Display / system stack, letter-spacing `-0.01em` for body, `0.04em–0.10em` for small/uppercase labels, `font-variant-numeric: tabular-nums` for time/money/count.
+- Background: `--bg` (#FFFDF5 cream), `--white` (#FFFFFF) for cards
+- Text: `--fg` (#09090B rich black, not pure black), `--muted` (#5A5A6E)
+- Accents: `--red` (#FF6B6B primary CTA), `--violet` (#B5A8FF), `--yellow` (#FFD93D),
+  `--green` (#A7E8BD), `--orange` (#FFB088), `--pink` (#FFB8D9)
+- Borders: `--border` (3px solid var(--fg)), `--border-strong` (5px solid var(--fg))
+- Shadows (hard offset, no blur): `--shadow-sm` (4px), `--shadow-md` (6px), `--shadow-lg` (12px)
+- Animation: `--press` (100ms linear), `--spring` (cubic-bezier(0.34, 1.4, 0.64, 1))
+
+Typography: **Space Grotesk** (Google Fonts, weights 500/600/700) for everything. Body `letter-spacing: -0.005em`, uppercase labels `0.10em–0.16em`, numbers `font-variant-numeric: tabular-nums`.
 
 ## Visual conventions — don't drift
 
-- **Liquid Glass surfaces** (top bar pills, modal sheet, history items, copy button): `backdrop-filter: blur(20–40px) saturate(180%)` + `var(--glass-bg)` + `1px solid var(--glass-border)`. Use this for any new surface — don't introduce solid panels.
-- **Conic-gradient aura** belongs to the record button only (rotating, blurred 40px). Don't apply to other elements.
-- **Mesh gradient ambient bg** lives once on `body::before`/`body::after`. Don't repeat it per-component.
-- **Spring curves**: press `cubic-bezier(0.34, 1.4, 0.64, 1)`, modal entrance `cubic-bezier(0.16, 1, 0.3, 1)`, breathing/pulse `cubic-bezier(0.4, 0, 0.6, 1)`.
-- **Voice reactivity** (recording state): JS sets `--voice-level` on `#rec` plus an 8-corner asymmetric `border-radius` ("blob"). Smoothing alpha **0.16** (~95ms time constant). Don't change the alpha without a reason — too low feels dead, too high jittery.
+- **Thick black borders + hard offset shadows** on every interactive surface (top bar pills, modals, history items, buttons): use `var(--border)` + one of the `--shadow-{sm,md,lg}` tokens. **No `backdrop-filter`, no blur, no glass.**
+- **Mechanical press** on every clickable element: on `:active` translate `(N, N)px` matching the shadow offset and drop the shadow to `0`. No scale, no spring physics. See `#rec`, `.topbar-btn`, `.user-pill`, `.ghost-btn` for the pattern.
+- **Slight rotation** on identity elements: history btn `-2°`, user pill `+1.5°`, REC sticker `+14°`. Don't over-apply — only on "sticker"-like elements that earn the playful tilt.
+- **Voice reactivity** (recording state): JS sets `--voice-level` on `#rec` (0..1), CSS drives 4 properties — scale (+7%), tilt (-1.2°), yellow halo ring (0→22px), framed black outline (4px thicker than halo). Smoothing alpha **0.16** in JS (~95ms time constant). Don't change the alpha without a reason.
+- **Dot-grid texture** lives once on `body::before` (24px grid, low-opacity black, mask-faded toward edges). Don't repeat per-component.
+- **Spring curves** (for non-press motion): modal entrance `cubic-bezier(0.16, 1, 0.3, 1)`, busy bounce `cubic-bezier(0.4, 0, 0.6, 1)`.
 - **`hidden` attribute pitfall**: any element with `display: flex|grid|block` in author CSS will defeat the HTML `hidden` attribute. There is a global `[hidden] { display: none !important }` rule at the top of `style.css` covering this — leave it in place. New surfaces should rely on the `hidden` attribute (so JS toggles via `el.hidden = true/false`), not on CSS classes.
+- **UI sounds**: every interactive moment that warrants audio feedback should call the matching function from `web/sounds.ts` (e.g. `playStartRec()`, `playSuccess()`, `playError()`). Respects the user's mute toggle via `localStorage`. Don't load external audio assets — extend `sounds.ts` with new synth functions instead.
 
 ## Adding things
 
@@ -256,7 +267,7 @@ Typography: SF Pro Display / system stack, letter-spacing `-0.01em` for body, `0
 
 **New persistent state:** new `createXxxStore(dataDir)` factory in `src/`. File at `data/<name>.json`. Read-load-save pattern (no streaming — small data). Add tests in `tests/`.
 
-**New UI element:** HTML in `web/index.html`, style with existing tokens, surface = Liquid Glass, animations = one of the spring curves above. Wire in `web/app.ts`.
+**New UI element:** HTML in `web/home.html`, style with existing tokens (Neo-Brutalism: thick borders + offset shadow + mechanical press, see Visual conventions). Wire in `web/app.ts`. If the interaction warrants audio feedback, add a matching synth function in `web/sounds.ts` and call it from `app.ts`.
 
 **New language preferences:** the language hint lives in `LANGUAGE_PROMPT` in `src/transcribe.ts` (ru/uk/en + "keep English terms verbatim" + "never Belarusian"). User-specific — see memory `feedback_transcription_languages.md`.
 
