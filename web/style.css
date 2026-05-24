@@ -1,29 +1,41 @@
+/* voice-clip · Neo-Brutalism theme (Cream + Red + Violet)
+   --------------------------------------------------------
+   Visual language: thick black borders, hard offset shadows (no blur),
+   subtle dot grid background, slight intentional rotations (-2deg/+1.5deg),
+   mechanical press (button translates to its shadow on tap), Space Grotesk
+   geometric sans throughout. All class/ID names preserved for JS hooks. */
+
 * {
   box-sizing: border-box;
   -webkit-tap-highlight-color: transparent;
 }
 
-/* The `hidden` HTML attribute must always win over author display rules.
-   Without this, `display: flex/grid` set on .history-modal / .user-menu /
-   .topbar-badge keeps them visible despite the attribute. */
+/* `hidden` HTML attribute must always win over author display rules. */
 [hidden] {
   display: none !important;
 }
 
 :root {
-  --bg-0: #07070b;
-  --bg-1: #0c0c14;
-  --fg: #f1f1f7;
-  --muted: #8b8b9c;
-  --glass-bg: rgba(255, 255, 255, 0.045);
-  --glass-bg-hover: rgba(255, 255, 255, 0.075);
-  --glass-border: rgba(255, 255, 255, 0.10);
-  --glass-border-strong: rgba(255, 255, 255, 0.18);
-  --accent-a: #7383ff;
-  --accent-b: #b15eff;
-  --rec-a: #ff5577;
-  --rec-b: #ff7a4f;
-  --shadow-deep: 0 30px 80px -20px rgba(0, 0, 0, 0.7);
+  --bg: #FFFDF5;
+  --fg: #09090B;
+  --muted: #5A5A6E;
+  --white: #FFFFFF;
+  --red: #FF6B6B;
+  --violet: #B5A8FF;
+  --yellow: #FFD93D;
+  --green: #A7E8BD;
+  --orange: #FFB088;
+  --pink: #FFB8D9;
+
+  --border: 3px solid var(--fg);
+  --border-strong: 5px solid var(--fg);
+  --shadow-sm: 4px 4px 0 var(--fg);
+  --shadow-md: 6px 6px 0 var(--fg);
+  --shadow-lg: 12px 12px 0 var(--fg);
+
+  /* Animation tokens */
+  --press: 100ms linear;
+  --spring: cubic-bezier(0.34, 1.4, 0.64, 1);
 }
 
 html,
@@ -31,61 +43,41 @@ body {
   margin: 0;
   padding: 0;
   height: 100%;
-  background: var(--bg-0);
+  background: var(--bg);
   color: var(--fg);
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif;
+  font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.005em;
   overscroll-behavior: none;
   overflow: hidden;
 }
 
-/* Ambient mesh gradient background */
-body::before,
-body::after {
+/* Subtle dot-grid texture — the only "pattern" in the design. */
+body::before {
   content: "";
   position: fixed;
   inset: 0;
+  background-image: radial-gradient(circle at 1px 1px, rgba(9, 9, 11, 0.12) 1.4px, transparent 0);
+  background-size: 24px 24px;
   pointer-events: none;
   z-index: -1;
-}
-
-body::before {
-  background:
-    radial-gradient(ellipse 60% 50% at 30% 18%, rgba(115, 131, 255, 0.26), transparent 60%),
-    radial-gradient(ellipse 55% 50% at 82% 88%, rgba(177, 94, 255, 0.22), transparent 60%),
-    radial-gradient(ellipse 50% 45% at 88% 12%, rgba(99, 162, 255, 0.12), transparent 65%),
-    radial-gradient(ellipse 80% 60% at 50% 50%, rgba(20, 22, 40, 1), var(--bg-0) 80%);
-  /* Slow, subtle drift so the (deliberately minimal) screen feels alive
-     without distracting from the single button. Calm breathing curve. */
-  animation: bg-drift 26s cubic-bezier(0.4, 0, 0.6, 1) infinite alternate;
-  transform-origin: center;
-}
-
-@keyframes bg-drift {
-  from {
-    transform: scale(1) translate3d(0, 0, 0);
-  }
-  to {
-    transform: scale(1.12) translate3d(-2.5%, -2%, 0);
-  }
+  opacity: 0.55;
+  mask-image: radial-gradient(ellipse 90% 80% at 50% 50%, black 30%, transparent 95%);
+  -webkit-mask-image: radial-gradient(ellipse 90% 80% at 50% 50%, black 30%, transparent 95%);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  body::before {
-    animation: none;
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }
 
-body::after {
-  background-image:
-    radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.04) 1px, transparent 0);
-  background-size: 28px 28px;
-  mask-image: radial-gradient(ellipse 70% 60% at 50% 40%, black 30%, transparent 80%);
-  -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 40%, black 30%, transparent 80%);
-  opacity: 0.6;
-}
+/* === Main layout === */
 
 main {
   position: relative;
@@ -94,112 +86,58 @@ main {
   align-items: center;
   justify-content: center;
   height: 100dvh;
-  padding:
-    max(env(safe-area-inset-top), 24px)
-    20px
-    max(env(safe-area-inset-bottom), 24px);
-  gap: 24px;
+  padding: 0 20px;
+  gap: 22px;
 }
 
-/* === Record button === */
+/* === Record button — the centerpiece === */
 
 #rec {
-  --size: min(74vw, 60vh, 420px);
+  --size: min(74vw, 60vh, 380px);
   position: relative;
   width: var(--size);
   height: var(--size);
   border-radius: 50%;
-  border: 1px solid var(--glass-border-strong);
-  background: var(--glass-bg);
-  backdrop-filter: blur(28px) saturate(180%);
-  -webkit-backdrop-filter: blur(28px) saturate(180%);
+  background: var(--red);
+  border: var(--border-strong);
   color: var(--fg);
   cursor: pointer;
   user-select: none;
   -webkit-user-select: none;
-  display: grid;
-  place-items: center;
-  box-shadow:
-    var(--shadow-deep),
-    inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    inset 0 -20px 40px rgba(115, 131, 255, 0.08);
-  transition: transform 0.18s cubic-bezier(0.34, 1.4, 0.64, 1), box-shadow 0.5s ease, border-color 0.5s ease;
-  overflow: hidden;
-  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  box-shadow: var(--shadow-lg);
+  transition: transform var(--press), box-shadow var(--press), background 0.18s ease, border-color 0.18s ease;
+  font-family: inherit;
 }
 
-/* Soft glowing aura behind the button (idle) */
-#rec::before {
-  content: "";
-  position: absolute;
-  inset: -20%;
-  background: conic-gradient(
-    from 0deg,
-    rgba(115, 131, 255, 0.35),
-    rgba(177, 94, 255, 0.25),
-    rgba(115, 131, 255, 0.35)
-  );
-  filter: blur(40px);
-  opacity: 0.5;
-  z-index: -1;
-  animation: spin 18s linear infinite;
-}
-
-#rec::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  background: linear-gradient(
-    160deg,
-    rgba(255, 255, 255, 0.10) 0%,
-    rgba(255, 255, 255, 0.0) 40%,
-    rgba(255, 255, 255, 0.0) 60%,
-    rgba(255, 255, 255, 0.04) 100%
-  );
-  pointer-events: none;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
+/* Mechanical press: jumps into its shadow */
 #rec:active {
-  transform: scale(0.97);
+  transform: translate(12px, 12px);
+  box-shadow: 0 0 0 var(--fg);
 }
 
-#rec.recording {
-  --voice-level: 0;
-  border-color: rgba(255, 85, 119, calc(0.45 + var(--voice-level) * 0.4));
-  /* Visible "I hear you" pulse: the whole disc breathes with your voice. */
-  transform: scale(calc(1 + var(--voice-level) * 0.06));
-  box-shadow:
-    var(--shadow-deep),
-    0 0 calc(36px + var(--voice-level) * 90px) rgba(255, 85, 119, calc(0.30 + var(--voice-level) * 0.45)),
-    inset 0 1px 0 rgba(255, 255, 255, 0.10),
-    inset 0 -20px 40px rgba(255, 85, 119, calc(0.10 + var(--voice-level) * 0.22));
-  transition: border-radius 90ms ease-out, border-color 0.3s ease,
-    box-shadow 0.12s ease-out, transform 0.1s ease-out;
-}
-
-#rec.recording::before {
-  background: conic-gradient(
-    from 0deg,
-    rgba(255, 85, 119, 0.55),
-    rgba(255, 122, 79, 0.45),
-    rgba(255, 85, 119, 0.55)
-  );
-  opacity: 0.7;
-  animation-duration: 6s;
-}
-
-#rec.busy {
-  cursor: progress;
-  border-color: rgba(255, 255, 255, 0.18);
-}
-
-#rec.busy::before {
-  animation-duration: 1.6s;
+/* "REC" sticker top-right, rotated */
+#rec::after {
+  content: "REC";
+  position: absolute;
+  top: 12%;
+  right: 8%;
+  background: var(--yellow);
+  color: var(--fg);
+  border: 3px solid var(--fg);
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  transform: rotate(14deg);
+  box-shadow: 3px 3px 0 var(--fg);
+  pointer-events: none;
+  transition: background 0.18s ease, color 0.18s ease, transform 0.2s var(--spring);
 }
 
 /* Inner content stack */
@@ -209,20 +147,19 @@ main {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: 10px;
   z-index: 1;
 }
 
 .mic-icon {
-  width: 28%;
-  height: 28%;
+  width: clamp(64px, 22vmin, 120px);
+  height: clamp(64px, 22vmin, 120px);
   fill: none;
   stroke: var(--fg);
-  stroke-width: 2;
+  stroke-width: 2.3;
   stroke-linecap: round;
   stroke-linejoin: round;
-  transition: opacity 0.2s ease, transform 0.2s ease;
-  filter: drop-shadow(0 4px 16px rgba(115, 131, 255, 0.5));
+  transition: opacity 0.18s ease, transform 0.18s ease;
 }
 
 #rec.recording .mic-icon,
@@ -232,12 +169,12 @@ main {
 }
 
 #rec-label {
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.14em;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: var(--muted);
-  transition: opacity 0.2s ease;
+  color: var(--fg);
+  transition: opacity 0.18s ease;
 }
 
 #rec.recording #rec-label,
@@ -247,49 +184,121 @@ main {
 
 #rec-time {
   position: absolute;
-  font-size: clamp(40px, 9vw, 56px);
-  font-weight: 300;
+  font-size: clamp(42px, 10vw, 64px);
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.02em;
   color: var(--fg);
   opacity: 0;
-  transition: opacity 0.25s ease;
-  text-shadow: 0 4px 24px rgba(255, 85, 119, 0.4);
+  transition: opacity 0.18s ease;
 }
 
 #rec.recording #rec-time {
   opacity: 1;
 }
 
-/* While transcribing: hide the timer + mic, show the dots loader only */
 #rec.busy #rec-time {
   opacity: 0;
 }
 
-/* Transcribing loader — three softly breathing dots (replaces the old
-   hairline spinner). Spring/breathing curve per design conventions. */
+/* Recording — voice-reactive in a mechanical, multi-layer way:
+   • button scales up to +7% on peaks
+   • a YELLOW halo ring grows around the button (0 → 22px), framed
+     by a black outline ring beyond it (always 4px thicker than the halo)
+     so the silhouette stays sharp at any volume
+   • the hard offset shadow grows from 12 → 22px so the whole thing
+     leans heavier when you're loud
+   • a subtle wobble (±1.2°) tied to voice keeps it feeling alive
+   All driven by --voice-level (0..1), set by JS ~30/sec. */
+#rec.recording {
+  --voice-level: 0;
+  background: var(--red);
+  transform:
+    scale(calc(1 + var(--voice-level) * 0.07))
+    rotate(calc(var(--voice-level) * -1.2deg));
+  box-shadow:
+    /* Hard offset shadow — grows with voice */
+    calc(12px + var(--voice-level) * 10px) calc(12px + var(--voice-level) * 10px) 0 var(--fg),
+    /* Yellow halo band (no blur, mechanical) */
+    0 0 0 calc(2px + var(--voice-level) * 20px) var(--yellow),
+    /* Black outline framing the halo so silhouette stays crisp */
+    0 0 0 calc(6px + var(--voice-level) * 22px) var(--fg);
+  transition:
+    transform 90ms cubic-bezier(0.4, 0, 0.6, 1),
+    box-shadow 110ms cubic-bezier(0.4, 0, 0.6, 1),
+    background 0.18s ease;
+}
+
+/* ON AIR sticker reacts too: pops bigger on louder voice */
+#rec.recording::after {
+  content: "ON AIR";
+  background: var(--fg);
+  color: var(--yellow);
+  transform:
+    rotate(calc(-6deg + var(--voice-level, 0) * -4deg))
+    scale(calc(1.05 + var(--voice-level, 0) * 0.15));
+  animation: rec-blink 1.1s steps(2, end) infinite;
+  transition: transform 90ms cubic-bezier(0.4, 0, 0.6, 1);
+}
+
+@keyframes rec-blink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0.4; }
+}
+
+#rec.busy {
+  cursor: progress;
+  background: var(--violet);
+}
+
+#rec.busy::after {
+  content: "WORKING";
+  background: var(--fg);
+  color: var(--white);
+  transform: rotate(-6deg);
+}
+
+/* Paused: yellow tint + warning sticker */
+#rec.paused {
+  background: var(--yellow);
+  transform: none;
+  box-shadow: var(--shadow-lg);
+  animation: none;
+}
+#rec.paused::after {
+  content: "PAUSED";
+  background: var(--fg);
+  color: var(--yellow);
+  transform: rotate(-6deg);
+  animation: none;
+}
+
+/* Transcribing dots */
 .busy-dots {
   position: absolute;
   display: flex;
-  gap: 11px;
+  gap: 14px;
   opacity: 0;
-  transition: opacity 0.25s ease;
+  transition: opacity 0.2s ease;
   pointer-events: none;
 }
 
 .busy-dots i {
-  width: 13px;
-  height: 13px;
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
-  background: linear-gradient(135deg, var(--accent-a), var(--accent-b));
-  box-shadow: 0 2px 12px rgba(115, 131, 255, 0.55);
+  background: var(--fg);
+  border: 2px solid var(--fg);
   animation: busy-bounce 1.15s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
 .busy-dots i:nth-child(2) {
+  background: var(--yellow);
   animation-delay: 0.16s;
 }
+
 .busy-dots i:nth-child(3) {
+  background: var(--red);
   animation-delay: 0.32s;
 }
 
@@ -298,81 +307,61 @@ main {
 }
 
 @keyframes busy-bounce {
-  0%,
-  80%,
-  100% {
+  0%, 80%, 100% {
     transform: translateY(0) scale(0.7);
-    opacity: 0.45;
+    opacity: 0.6;
   }
   40% {
-    transform: translateY(-9px) scale(1);
+    transform: translateY(-12px) scale(1);
     opacity: 1;
   }
 }
 
-/* Paused: keep the recording aura but calm/steady (no voice reactivity) */
-#rec.paused {
-  border-color: rgba(255, 200, 60, 0.5);
-}
-#rec.paused::before {
-  background: conic-gradient(
-    from 0deg,
-    rgba(255, 200, 60, 0.45),
-    rgba(255, 122, 79, 0.35),
-    rgba(255, 200, 60, 0.45)
-  );
-  opacity: 0.55;
-  animation-duration: 14s;
-}
+/* === Pause / resume control === */
 
-/* Pause / resume control — glass pill below the record button, only
-   visible while a recording is in progress. */
 #rec-pause {
   display: inline-flex;
   align-items: center;
   gap: 9px;
-  padding: 11px 22px;
+  padding: 12px 22px;
   font-family: inherit;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--fg);
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border-strong);
+  background: var(--white);
+  border: var(--border);
   border-radius: 999px;
-  backdrop-filter: blur(24px) saturate(180%);
-  -webkit-backdrop-filter: blur(24px) saturate(180%);
-  box-shadow: var(--shadow-deep), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  box-shadow: var(--shadow-sm);
   cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-  transition: transform 0.18s cubic-bezier(0.34, 1.4, 0.64, 1), border-color 0.3s ease;
+  transition: transform var(--press), box-shadow var(--press), background 0.18s ease;
 }
 
 #rec-pause:active {
-  transform: scale(0.95);
+  transform: translate(4px, 4px);
+  box-shadow: 0 0 0 var(--fg);
 }
 
 #rec-pause svg {
-  width: 16px;
-  height: 16px;
-  fill: var(--accent-a);
+  width: 18px;
+  height: 18px;
+  fill: var(--fg);
 }
 
 #rec-pause .resume-icon {
   display: none;
 }
 
-/* When paused, the control offers "Resume" */
 #rec-pause.is-paused {
-  border-color: rgba(255, 200, 60, 0.5);
+  background: var(--yellow);
 }
 #rec-pause.is-paused .pause-icon {
   display: none;
 }
 #rec-pause.is-paused .resume-icon {
   display: block;
-  fill: #ffd070;
+  fill: var(--fg);
 }
 
 /* === Top bar === */
@@ -385,7 +374,7 @@ main {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: max(env(safe-area-inset-top), 14px) 18px 0 18px;
+  padding: max(env(safe-area-inset-top), 18px) 18px 0 18px;
   z-index: 10;
   pointer-events: none;
 }
@@ -396,107 +385,128 @@ main {
 
 .topbar-btn {
   position: relative;
-  width: 50px;
-  height: 50px;
-  border-radius: 50%;
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border-strong);
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
-  box-shadow: var(--shadow-deep), inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  background: var(--white);
+  border: var(--border);
   color: var(--fg);
   cursor: pointer;
   display: grid;
   place-items: center;
-  transition: background 0.15s ease, transform 0.18s cubic-bezier(0.34, 1.4, 0.64, 1);
-  -webkit-tap-highlight-color: transparent;
+  box-shadow: var(--shadow-sm);
+  transform: rotate(-2deg);
+  transition: transform var(--press), box-shadow var(--press), background 0.18s ease;
+  font-family: inherit;
 }
 
-.topbar-btn:hover { background: var(--glass-bg-hover); }
-.topbar-btn:active { transform: scale(0.92); }
-.topbar-btn svg { width: 23px; height: 23px; }
+.topbar-btn:hover { background: var(--yellow); }
+.topbar-btn:active {
+  transform: rotate(-2deg) translate(4px, 4px);
+  box-shadow: 0 0 0 var(--fg);
+}
+.topbar-btn svg {
+  width: 23px;
+  height: 23px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 
+/* Pending-clip badge on history-btn */
 .topbar-badge {
   position: absolute;
-  top: -4px;
-  right: -4px;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  font-size: 10px;
+  top: -6px;
+  right: -6px;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  font-size: 11px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-  background: var(--rec-a);
-  color: white;
+  background: var(--red);
+  color: var(--fg);
   border-radius: 999px;
   display: grid;
   place-items: center;
-  border: 2px solid var(--bg-0);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+  border: 2.5px solid var(--fg);
+  box-shadow: 2px 2px 0 var(--fg);
+  transform: rotate(6deg);
 }
 
 .total-pill {
   display: inline-block;
-  font-size: 11px;
-  font-weight: 500;
+  font-size: 12px;
+  font-weight: 700;
   letter-spacing: 0.04em;
   font-variant-numeric: tabular-nums;
-  color: var(--muted);
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--glass-border);
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
-  padding: 6px 12px;
+  color: var(--fg);
+  background: var(--white);
+  border: var(--border);
+  box-shadow: var(--shadow-sm);
+  padding: 8px 14px;
   border-radius: 999px;
 }
 
 .topbar-right {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 
 .offline-pill {
   display: inline-block;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: #ff8a93;
-  background: rgba(255, 100, 100, 0.14);
-  border: 1px solid rgba(255, 100, 100, 0.30);
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
-  padding: 5px 11px;
+  color: var(--fg);
+  background: var(--orange);
+  border: var(--border);
+  box-shadow: var(--shadow-sm);
+  padding: 7px 12px;
   border-radius: 999px;
-  animation: offline-pulse 1.8s ease-in-out infinite;
+  animation: offline-pulse 1.4s steps(2, end) infinite;
+}
+
+@keyframes offline-pulse {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0.55; }
 }
 
 .user-pill {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   font-family: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.01em;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.005em;
   color: var(--fg);
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border-strong);
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
-  box-shadow: var(--shadow-deep), inset 0 1px 0 rgba(255, 255, 255, 0.07);
-  height: 50px;
-  padding: 0 18px;
+  background: var(--violet);
+  border: var(--border);
+  box-shadow: var(--shadow-sm);
+  height: 52px;
+  padding: 0 18px 0 8px;
   border-radius: 999px;
   cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-  transition: background 0.15s ease, transform 0.18s cubic-bezier(0.34, 1.4, 0.64, 1);
+  transform: rotate(1.5deg);
+  transition: transform var(--press), box-shadow var(--press), background 0.18s ease;
 }
 .user-pill svg {
-  width: 18px;
-  height: 18px;
-  opacity: 0.7;
+  width: 36px;
+  height: 36px;
+  padding: 6px;
+  stroke: var(--fg);
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  background: var(--yellow);
+  border: 2.5px solid var(--fg);
+  border-radius: 50%;
   flex: none;
 }
 .user-pill-name {
@@ -505,8 +515,11 @@ main {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.user-pill:hover { background: var(--glass-bg-hover); }
-.user-pill:active { transform: scale(0.95); }
+.user-pill:hover { background: var(--pink); }
+.user-pill:active {
+  transform: rotate(1.5deg) translate(4px, 4px);
+  box-shadow: 0 0 0 var(--fg);
+}
 
 /* === User menu === */
 
@@ -521,9 +534,7 @@ main {
 .user-menu-backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  background: rgba(9, 9, 11, 0.5);
   animation: hist-fade 0.22s ease;
 }
 
@@ -534,32 +545,27 @@ main {
   transform: translate(-50%, -50%);
   display: grid;
   gap: 8px;
-  min-width: 240px;
-  padding: 22px 22px 18px 22px;
-  background: rgba(14, 14, 22, 0.86);
-  backdrop-filter: blur(40px) saturate(180%);
-  -webkit-backdrop-filter: blur(40px) saturate(180%);
-  border: 1px solid var(--glass-border);
-  border-radius: 18px;
-  box-shadow: var(--shadow-deep);
-  animation: hist-fade 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  min-width: 260px;
+  padding: 24px 24px 20px 24px;
+  background: var(--white);
+  border: var(--border-strong);
+  box-shadow: var(--shadow-lg);
+  animation: hist-pop 0.28s var(--spring);
 }
 
 .user-menu-name {
-  margin: 0 0 6px;
+  margin: 0 0 8px;
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 700;
   text-align: center;
   color: var(--muted);
-  letter-spacing: 0.04em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 
-.ghost-btn.danger { color: #ff8a93; }
-
-@keyframes offline-pulse {
-  0%, 100% { opacity: 0.85; }
-  50%      { opacity: 0.55; }
+@keyframes hist-pop {
+  from { transform: translate(-50%, -50%) scale(0.92); opacity: 0; }
+  to   { transform: translate(-50%, -50%) scale(1);    opacity: 1; }
 }
 
 /* === History modal === */
@@ -575,9 +581,7 @@ main {
 .history-backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  background: rgba(9, 9, 11, 0.5);
   animation: hist-fade 0.22s ease;
 }
 
@@ -589,9 +593,7 @@ main {
   right: 0;
   display: flex;
   flex-direction: column;
-  background: rgba(14, 14, 22, 0.86);
-  backdrop-filter: blur(40px) saturate(180%);
-  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  background: var(--bg);
   animation: hist-slide 0.32s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -609,63 +611,89 @@ main {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: max(env(safe-area-inset-top), 16px) 16px 12px 16px;
-  border-bottom: 1px solid var(--glass-border);
+  padding: max(env(safe-area-inset-top), 18px) 16px 14px 16px;
+  border-bottom: var(--border);
+  background: var(--white);
 }
 
 .history-head h2 {
   flex: 1;
   margin: 0;
-  font-size: 17px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
   text-align: center;
+  text-transform: uppercase;
 }
 
 .ghost-btn {
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 700;
   font-family: inherit;
-  color: var(--accent-a);
-  background: transparent;
-  border: none;
+  color: var(--fg);
+  background: var(--white);
+  border: 3px solid var(--fg);
+  border-radius: 10px;
   cursor: pointer;
-  padding: 8px 10px;
-  -webkit-tap-highlight-color: transparent;
+  padding: 8px 14px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  box-shadow: 3px 3px 0 var(--fg);
+  transition: transform var(--press), box-shadow var(--press), background 0.15s ease;
+}
+.ghost-btn:hover { background: var(--yellow); }
+.ghost-btn:active {
+  transform: translate(3px, 3px);
+  box-shadow: 0 0 0 var(--fg);
+}
+
+.ghost-btn.danger {
+  background: var(--red);
+  color: var(--fg);
 }
 
 .history-list {
   flex: 1;
   overflow-y: auto;
-  padding: 12px 16px max(env(safe-area-inset-bottom), 24px) 16px;
+  padding: 16px 16px max(env(safe-area-inset-bottom), 24px) 16px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 14px;
 }
 
 .history-item {
   position: relative;
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
-  border-radius: 16px;
-  padding: 12px 14px;
-  transition: opacity 0.2s ease, background 0.2s ease;
+  background: var(--white);
+  border: var(--border);
+  border-radius: 14px;
+  padding: 14px 16px;
+  box-shadow: var(--shadow-sm);
+  transition: opacity 0.2s ease, transform 0.2s ease;
 }
 
 .history-item.read {
-  opacity: 0.55;
+  opacity: 0.6;
+}
+
+.history-item.unread {
+  background: var(--yellow);
 }
 
 .history-item.unread::before {
-  content: "";
+  content: "NEW";
   position: absolute;
-  top: 14px;
-  left: -3px;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent-a);
-  box-shadow: 0 0 8px var(--accent-a);
+  top: -10px;
+  left: -6px;
+  background: var(--red);
+  color: var(--fg);
+  border: 2.5px solid var(--fg);
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  transform: rotate(-6deg);
+  box-shadow: 2px 2px 0 var(--fg);
 }
 
 .history-item-head {
@@ -673,9 +701,12 @@ main {
   align-items: center;
   gap: 8px;
   font-size: 11px;
+  font-weight: 700;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
-  margin-bottom: 6px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
 }
 
 .history-time {
@@ -686,35 +717,35 @@ main {
   display: inline-block;
   font-size: 9px;
   font-weight: 700;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.10em;
   text-transform: uppercase;
-  padding: 2px 6px;
+  padding: 3px 7px;
   border-radius: 4px;
-  background: rgba(115, 131, 255, 0.18);
-  color: var(--accent-a);
+  background: var(--violet);
+  color: var(--fg);
+  border: 2px solid var(--fg);
 }
 
 .badge.offline {
-  background: rgba(255, 122, 79, 0.18);
-  color: #ff9e7a;
+  background: var(--orange);
 }
 
 .badge.pending {
-  background: rgba(255, 200, 60, 0.18);
-  color: #ffd070;
+  background: var(--yellow);
 }
 
 .history-text {
-  font-size: 14px;
-  line-height: 1.45;
+  font-size: 15px;
+  line-height: 1.5;
   color: var(--fg);
   word-wrap: break-word;
   white-space: pre-wrap;
   margin: 0;
+  font-weight: 500;
 }
 
 .history-pending {
-  font-size: 13px;
+  font-size: 14px;
   color: var(--muted);
   font-style: italic;
   margin: 0;
@@ -722,56 +753,62 @@ main {
 
 .history-actions {
   display: flex;
-  gap: 6px;
-  margin-top: 10px;
+  gap: 8px;
+  margin-top: 12px;
   flex-wrap: wrap;
 }
 
 .history-actions button {
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 700;
   font-family: inherit;
-  padding: 6px 12px;
-  background: rgba(255, 255, 255, 0.05);
+  padding: 7px 12px;
+  background: var(--white);
   color: var(--fg);
-  border: 1px solid var(--glass-border);
+  border: 2.5px solid var(--fg);
   border-radius: 8px;
   cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-  transition: background 0.15s ease, transform 0.08s ease;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  box-shadow: 2px 2px 0 var(--fg);
+  transition: transform var(--press), box-shadow var(--press), background 0.15s ease;
 }
 
+.history-actions button:hover { background: var(--yellow); }
 .history-actions button:active {
-  transform: scale(0.96);
+  transform: translate(2px, 2px);
+  box-shadow: 0 0 0 var(--fg);
 }
 
 .history-actions button.danger {
-  color: #ff8a93;
+  background: var(--red);
+  color: var(--fg);
 }
 
 .history-cost {
   display: inline-block;
   font-size: 10px;
-  font-weight: 600;
-  padding: 2px 7px;
+  font-weight: 700;
+  padding: 3px 8px;
   border-radius: 5px;
-  background: rgba(115, 131, 255, 0.14);
-  color: var(--accent-a);
+  background: var(--fg);
+  color: var(--yellow);
   font-variant-numeric: tabular-nums;
+  border: 2px solid var(--fg);
 }
 
 .history-empty {
   text-align: center;
   color: var(--muted);
-  font-size: 14px;
-  padding: 60px 20px;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 80px 20px;
   margin: 0;
 }
 
-/* === Profile modal ===
-   Same Liquid Glass sheet as the history modal (backdrop blur(8px),
-   sheet blur(40px) saturate(180%), slide+fade entrance on the modal
-   spring curve). Visibility via the `hidden` attribute. */
+/* === Profile modal === */
 
 .profile-modal {
   position: fixed;
@@ -784,9 +821,7 @@ main {
 .profile-backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.55);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  background: rgba(9, 9, 11, 0.5);
   animation: hist-fade 0.22s ease;
 }
 
@@ -798,9 +833,7 @@ main {
   right: 0;
   display: flex;
   flex-direction: column;
-  background: rgba(14, 14, 22, 0.86);
-  backdrop-filter: blur(40px) saturate(180%);
-  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  background: var(--bg);
   animation: hist-slide 0.32s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -808,30 +841,32 @@ main {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: max(env(safe-area-inset-top), 16px) 16px 12px 16px;
-  border-bottom: 1px solid var(--glass-border);
+  padding: max(env(safe-area-inset-top), 18px) 16px 14px 16px;
+  border-bottom: var(--border);
+  background: var(--white);
 }
 
 .profile-head h2 {
   flex: 1;
   margin: 0;
-  font-size: 17px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
   text-align: center;
+  text-transform: uppercase;
 }
 
 .profile-body {
   flex: 1;
   overflow-y: auto;
-  padding: 16px 16px max(env(safe-area-inset-bottom), 24px) 16px;
+  padding: 18px 16px max(env(safe-area-inset-bottom), 24px) 16px;
 }
 
 .profile-section-title {
-  margin: 22px 0 12px;
-  font-size: 11px;
+  margin: 24px 0 14px;
+  font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--muted);
 }
@@ -839,59 +874,60 @@ main {
   margin-top: 4px;
 }
 
-/* Spend stat — Liquid Glass row, same family as .device-item */
 .profile-stat {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   padding: 16px 18px;
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
-  border-radius: 16px;
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  background: var(--yellow);
+  border: var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow-sm);
 }
 
 .profile-stat-label {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.10em;
   text-transform: uppercase;
-  color: var(--muted);
+  color: var(--fg);
 }
 
 .profile-stat-value {
-  font-size: 15px;
-  font-weight: 600;
+  font-size: 18px;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
-  color: var(--accent-a);
+  color: var(--fg);
+  letter-spacing: -0.01em;
 }
 
 .profile-version {
-  margin-top: 28px;
+  margin-top: 32px;
   text-align: center;
   font-size: 11px;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+  font-weight: 700;
 }
 
 .profile-devices {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
 }
 
 .device-item {
   display: flex;
   align-items: center;
   gap: 12px;
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
-  border-radius: 16px;
-  padding: 12px 14px;
+  background: var(--white);
+  border: var(--border);
+  border-radius: 14px;
+  padding: 14px 16px;
+  box-shadow: var(--shadow-sm);
 }
 
 .device-meta {
@@ -900,8 +936,8 @@ main {
 }
 
 .device-label {
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 15px;
+  font-weight: 700;
   color: var(--fg);
   letter-spacing: -0.01em;
   overflow: hidden;
@@ -910,29 +946,35 @@ main {
 }
 
 .device-seen {
-  margin-top: 2px;
+  margin-top: 3px;
   font-size: 11px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .device-revoke {
   flex: none;
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 700;
   font-family: inherit;
-  padding: 6px 12px;
-  background: rgba(255, 255, 255, 0.05);
-  color: #ff8a93;
-  border: 1px solid var(--glass-border);
+  padding: 7px 12px;
+  background: var(--red);
+  color: var(--fg);
+  border: 2.5px solid var(--fg);
   border-radius: 8px;
   cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-  transition: background 0.15s ease, transform 0.08s ease;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  box-shadow: 2px 2px 0 var(--fg);
+  transition: transform var(--press), box-shadow var(--press);
 }
 
 .device-revoke:active {
-  transform: scale(0.96);
+  transform: translate(2px, 2px);
+  box-shadow: 0 0 0 var(--fg);
 }
 
 .device-revoke:disabled {
@@ -943,105 +985,94 @@ main {
 .profile-empty {
   text-align: center;
   color: var(--muted);
-  font-size: 14px;
-  padding: 48px 20px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 60px 20px;
   margin: 0;
 }
 
-/* === Desktop download CTA ===
-   Shown on non-touch (desktop) devices in place of the record button.
-   Liquid Glass surface — same pattern as .history-item / .total-pill.
-   Visibility is controlled via the `hidden` attribute (toggled by JS);
-   the global [hidden]{display:none!important} rule handles hiding. */
+/* === Desktop download CTA === */
 
 .download-cta {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
-  padding: 32px 40px;
-  max-width: min(420px, calc(100vw - 48px));
+  gap: 12px;
+  padding: 36px 40px;
+  max-width: min(440px, calc(100vw - 48px));
   text-align: center;
   text-decoration: none;
   color: var(--fg);
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
-  border-radius: 24px;
-  box-shadow: var(--shadow-deep);
-  transition: background 0.18s ease, border-color 0.18s ease, transform 0.18s cubic-bezier(0.34, 1.4, 0.64, 1);
+  background: var(--white);
+  border: var(--border-strong);
+  border-radius: 22px;
+  box-shadow: var(--shadow-lg);
+  transition: transform var(--press), box-shadow var(--press), background 0.18s ease;
 }
 
 .download-cta:hover {
-  background: var(--glass-bg-hover);
-  border-color: var(--glass-border-strong);
+  background: var(--yellow);
 }
 
 .download-cta:active {
-  transform: scale(0.97);
+  transform: translate(12px, 12px);
+  box-shadow: 0 0 0 var(--fg);
 }
 
 .download-cta-icon {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 56px;
-  height: 56px;
+  width: 60px;
+  height: 60px;
   border-radius: 50%;
-  background: rgba(115, 131, 255, 0.12);
-  border: 1px solid rgba(115, 131, 255, 0.24);
-  color: var(--accent-a);
-  margin-bottom: 4px;
+  background: var(--red);
+  border: 3px solid var(--fg);
+  color: var(--fg);
+  margin-bottom: 6px;
+  box-shadow: 3px 3px 0 var(--fg);
 }
 
 .download-cta-icon svg {
   width: 26px;
   height: 26px;
-  filter: drop-shadow(0 2px 8px rgba(115, 131, 255, 0.4));
 }
 
 .download-cta-title {
-  font-size: 17px;
-  font-weight: 600;
+  font-size: 18px;
+  font-weight: 700;
   letter-spacing: -0.01em;
   color: var(--fg);
   line-height: 1.3;
 }
 
 .download-cta-sub {
-  font-size: 13px;
-  font-weight: 400;
+  font-size: 14px;
+  font-weight: 500;
   letter-spacing: -0.005em;
   color: var(--muted);
   line-height: 1.5;
 }
 
-/* === Toast (status) ===
-   Fixed-position iOS-style notification. Sits below the topbar (so it
-   never overlaps the history/total/user pills) and above all modals
-   (so toasts from inside the History sheet are visible). Auto-dismiss
-   is driven from JS via the `.show` class. */
+/* === Toast (status) === */
 
 #status {
   position: fixed;
-  /* Topbar = safe-area + 14px padding + 38px button. Toast sits below
-     with a 12px gap. */
-  top: calc(max(env(safe-area-inset-top), 14px) + 50px);
+  top: calc(max(env(safe-area-inset-top), 18px) + 64px);
   left: 50%;
   z-index: 200;
   margin: 0;
-  padding: 11px 18px;
+  padding: 12px 18px;
   max-width: min(460px, calc(100vw - 32px));
-  background: rgba(14, 14, 22, 0.86);
-  backdrop-filter: blur(28px) saturate(180%);
-  -webkit-backdrop-filter: blur(28px) saturate(180%);
-  border: 1px solid var(--glass-border);
-  border-radius: 14px;
-  box-shadow: var(--shadow-deep);
+  background: var(--white);
+  border: var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-md);
   font-size: 14px;
-  font-weight: 500;
-  letter-spacing: -0.005em;
+  font-weight: 700;
+  letter-spacing: 0.02em;
   text-align: center;
   color: var(--fg);
   pointer-events: none;
@@ -1058,24 +1089,22 @@ main {
 }
 
 #status.error {
-  border-color: rgba(255, 122, 79, 0.42);
-  color: #ffb09a;
+  background: var(--red);
 }
 
 #status.success {
-  border-color: rgba(91, 227, 164, 0.40);
-  color: #b6f0cf;
+  background: var(--green);
 }
 
 #status.has-preview {
   text-align: left;
-  padding: 12px 16px;
+  padding: 14px 16px;
   width: min(460px, calc(100vw - 32px));
 }
 
 .toast-title {
   display: block;
-  font-weight: 600;
+  font-weight: 700;
   font-size: 14px;
   letter-spacing: -0.005em;
 }
@@ -1085,10 +1114,11 @@ main {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   margin-top: 4px;
-  font-size: 12.5px;
-  font-weight: 400;
+  font-size: 13px;
+  font-weight: 500;
   line-height: 1.4;
-  color: var(--muted);
+  color: var(--fg);
   overflow: hidden;
   word-break: break-word;
+  opacity: 0.85;
 }
