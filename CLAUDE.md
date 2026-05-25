@@ -111,9 +111,21 @@ For more information, read the Bun API docs in `node_modules/bun-types/docs/**.m
 
 Multi-user PWA-server that turns voice recordings into clipboard text. Phones record → server transcribes via OpenAI `gpt-4o-transcribe` → text lands in the user's per-Mac clipboard via an opt-in daemon. Originally a single-user Mac-local Telegram bot; both paths are gone.
 
+> **⚠ This file is largely v1-era and out-of-date as of 2026-05.** The "File map", "Storage and lifecycle", "Stores: factory pattern", "Auth model", and "Server: dependency injection" sections below describe the JSON-store / Synology NAS / invite-name-signup architecture that has been replaced. **Reality today:**
+>
+> - **Storage:** single SQLite file at `data/voice-clip.sqlite`. Tables: `users`, `sessions`, `history`, `costs`, `devices`, `pending_deliveries`, `errors`, `allowed_emails`, `invites`, `user_plans`, `usage_counters`. Source of truth: [`src/db.ts`](src/db.ts).
+> - **Stores:** `users-store`, `sessions-store`, `history-store`, `cost-store`, `devices-store`, `pending-deliveries-store`, `errors-store`, `failed-audio-store`, `allowed-emails-store`, `invites-store`, `plans-store`. All in `src/`, all `(db, now?)` factories.
+> - **Deploy target:** Hetzner VPS `46.62.229.131` (`deploy` user), `https://voice.rudifamily.uk` via Cloudflare Tunnel. NOT a Synology NAS anymore. CI-push deploys on every merge to `master` (`.github/workflows/server-deploy.yml`).
+> - **Auth:** Google OAuth + DB-backed allowlist + invite links. `VOICE_CLIP_ALLOWED_EMAILS` seeds the table on boot; new users join via `/invite/:token` consumed atomically in the OAuth callback. `OWNER_EMAIL` marks the owner (sees admin UI). `ADMIN_TOKEN` is an alt admin path for ops scripts.
+> - **Pricing scaffold:** Free tier capped at 30 clips/month, Pro unlimited (no Stripe yet — flip a row in `user_plans` to promote). See [`docs/adr/0003-monetization-scaffold.md`](docs/adr/0003-monetization-scaffold.md).
+> - **Operations:** [`docs/runbook/operations.md`](docs/runbook/operations.md) covers invites, quota override, observability, cost queries.
+> - **Routes added** since this doc was written: `/api/errors`, `/admin/errors`, `/admin/errors/:id/replay`, `/admin/invites`, `/invite/:token`, `/pro`, `/icons/*`.
+>
+> When in doubt, **trust `src/db.ts` + `src/server.ts`** over what this doc says.
+
 Two deployment modes:
 - **Local Mac dev** (mkcert + pm2 + `https://Mac-mini-Rudnik.local:8443`) — for hacking on the code.
-- **Synology NAS via Tailscale Funnel + Docker** — production, public HTTPS, multi-user.
+- ~~**Synology NAS via Tailscale Funnel + Docker**~~ → **Hetzner VPS via Cloudflare Tunnel + Docker**. Production, public HTTPS, multi-user, CI-deployed on merge to `master`.
 
 ## File map
 
