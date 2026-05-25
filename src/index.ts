@@ -9,10 +9,11 @@ const server = await startServer({
   port: config.port,
   useTls: config.useTls,
   allowlist: config.allowedEmails,
+  ownerEmail: config.ownerEmail,
+  adminToken: config.adminToken,
   googleClientId: config.googleClientId,
   googleClientSecret: config.googleClientSecret,
   publicUrl: config.publicUrl,
-  adminToken: config.adminToken,
 })
 
 console.log(`voice-clip listening on :${server.port}`)

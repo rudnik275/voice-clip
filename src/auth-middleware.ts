@@ -95,6 +95,50 @@ export function parseStateCookie(header: string | null | undefined): string | nu
   return null
 }
 
+// Short-lived invite cookie — set when an invitee opens /invite/<token>, then
+// consumed in /auth/google/callback. Same shape as the OAuth state cookie
+// (HttpOnly, 10min, Lax) so it survives the Google redirect round-trip but
+// doesn't linger past the signup attempt.
+const INVITE_COOKIE_NAME = 'invite'
+const INVITE_MAX_AGE_SEC = 600
+
+export function buildInviteCookie(token: string, opts: { secure?: boolean } = {}): string {
+  const parts = [
+    `${INVITE_COOKIE_NAME}=${token}`,
+    'HttpOnly',
+    'Path=/',
+    `Max-Age=${INVITE_MAX_AGE_SEC}`,
+    'SameSite=Lax',
+  ]
+  if (opts.secure ?? true) parts.push('Secure')
+  return parts.join('; ')
+}
+
+export function buildClearInviteCookie(opts: { secure?: boolean } = {}): string {
+  const parts = [
+    `${INVITE_COOKIE_NAME}=`,
+    'HttpOnly',
+    'Path=/',
+    'Max-Age=0',
+    'SameSite=Lax',
+  ]
+  if (opts.secure ?? true) parts.push('Secure')
+  return parts.join('; ')
+}
+
+export function parseInviteCookie(header: string | null | undefined): string | null {
+  if (!header) return null
+  for (const segment of header.split(';')) {
+    const idx = segment.indexOf('=')
+    if (idx < 0) continue
+    const key = segment.slice(0, idx).trim()
+    if (key !== INVITE_COOKIE_NAME) continue
+    const value = segment.slice(idx + 1).trim()
+    return value.length > 0 ? value : null
+  }
+  return null
+}
+
 export function resolveUserFromRequest(
   req: Request,
   sessions: SessionsStore,

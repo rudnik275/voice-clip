@@ -116,6 +116,21 @@
           </button>
           <h3 class="profile-section-title">Paired devices</h3>
           <div class="profile-devices" id="profile-devices"></div>
+
+          <!-- Owner-only invite generator. JS un-hides + wires the click
+               only when /me reports is_owner=true. The generated link is
+               copied straight to the clipboard. -->
+          <div id="owner-invite-block" hidden>
+            <h3 class="profile-section-title">Invite a friend</h3>
+            <button class="device-item" id="invite-generate" type="button">
+              <div class="device-meta">
+                <div class="device-label">Generate invite link</div>
+                <div class="device-seen" id="invite-hint">One-time, copied to clipboard</div>
+              </div>
+              <div class="device-revoke">Generate</div>
+            </button>
+          </div>
+
           <div class="profile-version">voice-clip · __APP_VERSION__</div>
         </div>
       </div>

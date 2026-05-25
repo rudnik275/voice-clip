@@ -122,6 +122,36 @@ const SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS idx_errors_ts ON errors(ts DESC);
   CREATE INDEX IF NOT EXISTS idx_errors_user_id ON errors(user_id);
   CREATE INDEX IF NOT EXISTS idx_errors_resolved ON errors(resolved);
+
+  -- Allowed-email allowlist, DB-backed. Replaces the env-var-only allowlist
+  -- that needed a redeploy to add a friend. Seeded from
+  -- VOICE_CLIP_ALLOWED_EMAILS on boot so existing users keep working;
+  -- invite-consume adds rows on the fly. added_via is 'env' / 'invite' /
+  -- 'manual' for audit. email is stored lowercased.
+  CREATE TABLE IF NOT EXISTS allowed_emails (
+    email      TEXT PRIMARY KEY,
+    added_at   INTEGER NOT NULL,
+    added_via  TEXT NOT NULL,
+    invited_by TEXT
+  );
+
+  -- One-time invite tokens. Created by the owner via POST /admin/invites,
+  -- consumed atomically by /auth/google/callback when the invite cookie is
+  -- present. used_at + used_by_user_id flip when consumed so the same link
+  -- can't bring in a second user. invite cookies are short-lived (10min)
+  -- so an unconsumed token left in the wild times out client-side anyway.
+  CREATE TABLE IF NOT EXISTS invites (
+    token              TEXT PRIMARY KEY,
+    created_by_user_id TEXT,
+    created_at         INTEGER NOT NULL,
+    used_at            INTEGER,
+    used_by_user_id    TEXT,
+    used_by_email      TEXT,
+    FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE SET NULL,
+    FOREIGN KEY (used_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_invites_created_by ON invites(created_by_user_id);
 `
 
 export function openDb(path: string): DB {
