@@ -176,8 +176,25 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
   const accessDeniedTplRaw = await readWebFile('access-denied.html')
   const homeTplRaw = await readWebFile('home.html')
   const styleCss = await readWebFile('style.css')
-  const manifestJson = await readWebFile('manifest.webmanifest')
+  const manifestRaw = await readWebFile('manifest.webmanifest')
   const swJsRaw = await readWebFile('sw.js')
+
+  // PWA icons. Read at boot so the route handlers can hand back Buffer
+  // bytes directly — small files, no need for streaming. Filenames are
+  // enumerated explicitly so we never serve arbitrary paths from /icons/.
+  const ICONS: Record<string, { bytes: Buffer; mime: string }> = {}
+  for (const [name, mime] of [
+    ['icon-192.png', 'image/png'],
+    ['icon-512.png', 'image/png'],
+    ['apple-touch-icon.png', 'image/png'],
+    ['favicon-32.png', 'image/png'],
+    ['voice-clip-mark.svg', 'image/svg+xml'],
+  ] as const) {
+    ICONS[name] = {
+      bytes: await readFile(join(WEB_DIR, 'icons', name)),
+      mime,
+    }
+  }
 
   // Bundle + transpile the browser entrypoint once at boot. Bun strips TS
   // types and produces an ES module the browser can load directly via
@@ -201,21 +218,28 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
   // clients close (= next foreground on iOS). HTML is served `no-store`
   // so a deploy is never blocked by a stale Cloudflare/edge HTML cache;
   // CSS and JS are `immutable` because their URL changes per hash.
-  const ASSET_VER = createHash('sha1')
+  const verHash = createHash('sha1')
     .update(styleCss)
     .update(appJs)
     .update(swJsRaw)
     .update(APP_VERSION)
-    .digest('hex')
-    .slice(0, 10)
+  for (const name of Object.keys(ICONS).sort()) verHash.update(ICONS[name]!.bytes)
+  const ASSET_VER = verHash.digest('hex').slice(0, 10)
   const withAssetVer = (html: string): string =>
     html
       .replaceAll('/style.css"', `/style.css?v=${ASSET_VER}"`)
       .replaceAll('/app.ts"', `/app.ts?v=${ASSET_VER}"`)
+      // Icon URLs in HTML <link> tags and inside the manifest JSON.
+      .replaceAll('/icons/icon-192.png"', `/icons/icon-192.png?v=${ASSET_VER}"`)
+      .replaceAll('/icons/icon-512.png"', `/icons/icon-512.png?v=${ASSET_VER}"`)
+      .replaceAll('/icons/apple-touch-icon.png"', `/icons/apple-touch-icon.png?v=${ASSET_VER}"`)
+      .replaceAll('/icons/favicon-32.png"', `/icons/favicon-32.png?v=${ASSET_VER}"`)
+      .replaceAll('/icons/voice-clip-mark.svg"', `/icons/voice-clip-mark.svg?v=${ASSET_VER}"`)
 
   const loginHtml = withAssetVer(loginTplRaw)
   const homeHtmlStatic = withAssetVer(homeTplRaw).replace('__APP_VERSION__', APP_VERSION)
   const accessDeniedTpl = withAssetVer(accessDeniedTplRaw)
+  const manifestJson = withAssetVer(manifestRaw)
   const swJs = swJsRaw.replaceAll('__ASSET_VER__', ASSET_VER)
 
   function renderAccessDenied(email: string): string {
@@ -260,6 +284,23 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
           status: 200,
           headers: { 'content-type': 'application/manifest+json; charset=utf-8' },
         })
+      }
+      // Icon route: explicit allowlist by filename — never reads arbitrary
+      // paths from disk. The bytes are loaded at boot; URLs are versioned
+      // with ?v=hash so a redesign rolls cleanly without phones holding
+      // a stale icon in their home-screen cache.
+      if (method === 'GET' && pathname.startsWith('/icons/')) {
+        const name = pathname.slice('/icons/'.length)
+        const icon = ICONS[name]
+        if (icon) {
+          return new Response(icon.bytes, {
+            status: 200,
+            headers: {
+              'content-type': icon.mime,
+              'cache-control': 'public, max-age=31536000, immutable',
+            },
+          })
+        }
       }
       if (method === 'GET' && pathname === '/app.ts') {
         return new Response(appJs, {
