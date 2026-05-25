@@ -31,13 +31,17 @@ import {
 import { createLiveBus, type LiveBus } from './live-bus'
 import type { TranscriptionResult } from './transcribe'
 import { calcCostUsd } from './pricing'
-import { createAllowlist, type Allowlist } from './allowlist'
+import { createAllowedEmailsStore, type AllowedEmailsStore } from './allowed-emails-store'
+import { createInvitesStore, type InvitesStore } from './invites-store'
 import { createGoogleOAuth, type GoogleFetcher, type GoogleOAuth } from './google-oauth'
 import {
+  buildClearInviteCookie,
   buildClearSessionCookie,
   buildClearStateCookie,
+  buildInviteCookie,
   buildSessionCookie,
   buildStateCookie,
+  parseInviteCookie,
   parseStateCookie,
   resolveUserFromRequest,
   resolveDeviceFromRequest,
@@ -52,7 +56,14 @@ export interface ServerDeps {
   certPath?: string
   keyPath?: string
   // Auth / OAuth
-  allowlist?: readonly string[] | Allowlist
+  // Comma-separated env list of emails. Seeded into the DB allowed_emails
+  // table on boot (idempotent) so existing logins keep working; new emails
+  // get added at invite-consume time and never come back through here.
+  allowlist?: readonly string[]
+  // When set, this email's session counts as 'owner' — surfaces an extra
+  // bit on /me so the UI can show owner-only affordances (generate invite
+  // link). Otherwise the same actions are reachable via X-Admin-Token.
+  ownerEmail?: string
   googleFetcher?: GoogleFetcher
   googleClientId?: string
   googleClientSecret?: string
@@ -67,6 +78,8 @@ export interface ServerDeps {
   devices?: DevicesStore
   pendingDeliveries?: PendingDeliveriesStore
   errors?: ErrorsStore
+  allowedEmails?: AllowedEmailsStore
+  invites?: InvitesStore
   liveBus?: LiveBus
   transcribe?: (input: Uint8Array, filename: string) => Promise<TranscriptionResult>
   db?: DB
@@ -92,12 +105,6 @@ export interface RunningServer {
 
 const WEB_DIR = new URL('../web/', import.meta.url).pathname
 
-function asAllowlist(a: ServerDeps['allowlist']): Allowlist {
-  if (!a) return createAllowlist([])
-  if (Array.isArray(a)) return createAllowlist(a)
-  if (typeof (a as Allowlist).isAllowed === 'function') return a as Allowlist
-  return createAllowlist(a as readonly string[])
-}
 
 async function readWebFile(name: string): Promise<string> {
   return readFile(join(WEB_DIR, name), 'utf8')
@@ -136,7 +143,9 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
   const cookieSecure = deps.publicUrl
     ? new URL(deps.publicUrl).protocol === 'https:'
     : useTls
-  const allowlist = asAllowlist(deps.allowlist)
+  // owner-email is normalised so the equality check in /me + admin gate is
+  // not surprising about whitespace / case.
+  const ownerEmail = deps.ownerEmail?.trim().toLowerCase() ?? null
 
   const db = deps.db ?? openDb(join(deps.dataDir, 'voice-clip.sqlite'))
   const users = deps.users ?? createUsersStore(db, deps.now)
@@ -148,6 +157,20 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
     deps.pendingDeliveries ?? createPendingDeliveriesStore(db, deps.now)
   const errors = deps.errors ?? createErrorsStore(db, deps.now)
   const failedAudio = createFailedAudioStore(deps.dataDir)
+
+  const allowedEmails =
+    deps.allowedEmails ?? createAllowedEmailsStore(db, deps.now)
+  // Seed env emails into the DB (idempotent via INSERT OR IGNORE) so
+  // existing deploys don't lock anyone out at boot.
+  if (deps.allowlist && deps.allowlist.length > 0) {
+    allowedEmails.seed(deps.allowlist)
+  }
+  // The configured owner email is implicitly always on the allowlist —
+  // otherwise the owner could lock themselves out by misconfiguring the
+  // env seed list.
+  if (ownerEmail) allowedEmails.add(ownerEmail, 'env')
+
+  const invites = deps.invites ?? createInvitesStore(db, deps.now)
   const liveBus = deps.liveBus ?? createLiveBus()
 
   // Simple per-IP rate limit for /api/errors. The endpoint is unauthed so
@@ -157,9 +180,15 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
   const ERROR_RATE_WINDOW_MS = 60_000
   const errorRateBuckets = new Map<string, { count: number; resetAt: number }>()
 
-  function adminTokenOk(req: Request): boolean {
-    if (!deps.adminToken) return false
-    return req.headers.get('x-admin-token') === deps.adminToken
+  // Two ways to reach /admin/*:
+  //   - X-Admin-Token header matches deps.adminToken (env-driven ops scripts)
+  //   - logged-in user's email == ownerEmail (UI button in profile modal)
+  // The session path is gentler — no extra secret to remember.
+  function isAdminRequest(req: Request): boolean {
+    if (deps.adminToken && req.headers.get('x-admin-token') === deps.adminToken) return true
+    const authed = resolveUserFromRequest(req, sessions, users)
+    if (authed && ownerEmail && authed.user.email.toLowerCase() === ownerEmail) return true
+    return false
   }
 
   function clientIp(req: Request): string {
@@ -403,7 +432,7 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
 
       // ---- /admin/errors ---- (admin-token gated read)
       if (pathname === '/admin/errors') {
-        if (!adminTokenOk(req)) return new Response('Unauthorized', { status: 401 })
+        if (!isAdminRequest(req)) return new Response('Unauthorized', { status: 401 })
         if (method !== 'GET') return new Response('Method Not Allowed', { status: 405 })
         const includeResolved = url.searchParams.get('all') === '1'
         const limit = Math.min(500, Number(url.searchParams.get('limit') ?? 200))
@@ -431,7 +460,7 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
       // ---- /admin/errors/:id/replay ---- (re-run transcription on saved blob)
       const replayMatch = pathname.match(/^\/admin\/errors\/([^/]+)\/replay$/)
       if (replayMatch) {
-        if (!adminTokenOk(req)) return new Response('Unauthorized', { status: 401 })
+        if (!isAdminRequest(req)) return new Response('Unauthorized', { status: 401 })
         if (method !== 'POST') return new Response('Method Not Allowed', { status: 405 })
         const errId = replayMatch[1]!
         const row = errors.get(errId)
@@ -476,6 +505,11 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
           email: u.email,
           name: u.name,
           picture_url: u.picture_url,
+          // is_owner = "may create invite links / see admin affordances".
+          // The owner check is loose on purpose: if OWNER_EMAIL is unset,
+          // no one is owner (UI hides the button; admin token still works
+          // server-side for ops scripts).
+          is_owner: ownerEmail !== null && u.email.toLowerCase() === ownerEmail,
         })
       }
 
@@ -726,6 +760,64 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
         return Response.json({ ok: true })
       }
 
+      // ---- /admin/invites ---- (owner OR X-Admin-Token)
+      if (pathname === '/admin/invites') {
+        if (!isAdminRequest(req)) return new Response('Unauthorized', { status: 401 })
+        if (method === 'POST') {
+          const sessionAuth = resolveUserFromRequest(req, sessions, users)
+          const createdBy = sessionAuth?.user.id ?? null
+          const invite = invites.create(createdBy)
+          const baseUrl = publicBase || `${url.protocol}//${url.host}`
+          return Response.json({
+            token: invite.token,
+            url: `${baseUrl}/invite/${invite.token}`,
+          })
+        }
+        if (method === 'GET') {
+          const sessionAuth = resolveUserFromRequest(req, sessions, users)
+          // When called over a session, scope to the calling user's invites
+          // (an owner only sees their own); over admin token return nothing
+          // useful since we don't track ownership beyond the creator id.
+          const userId = sessionAuth?.user.id
+          const rows = userId ? invites.listByCreator(userId) : []
+          return Response.json(
+            rows.map((r) => ({
+              token: r.token,
+              createdAt: r.created_at,
+              used: r.used_at !== null,
+              usedAt: r.used_at,
+              usedByEmail: r.used_by_email,
+            })),
+          )
+        }
+        return new Response('Method Not Allowed', { status: 405 })
+      }
+
+      // ---- /invite/:token ---- (public, sets invite cookie + 302 OAuth)
+      const inviteMatch = pathname.match(/^\/invite\/([0-9a-f]{8,128})$/)
+      if (inviteMatch) {
+        if (method !== 'GET') return new Response('Method Not Allowed', { status: 405 })
+        const token = inviteMatch[1]!
+        const invite = invites.get(token)
+        if (!invite || invite.used_at !== null) {
+          // Render the access-denied page with a friendly message — using
+          // the same brutalism shell so the user doesn't fall onto a
+          // different visual context.
+          return new Response(
+            renderAccessDenied('this invite link has expired'),
+            {
+              status: 410,
+              headers: { 'content-type': 'text/html; charset=utf-8' },
+            },
+          )
+        }
+        // Set the invite cookie, then kick off the standard OAuth dance.
+        // /auth/google/start sets its own oauth_state cookie on top.
+        const h = new Headers({ location: '/auth/google/start' })
+        h.append('set-cookie', buildInviteCookie(token, { secure: cookieSecure }))
+        return new Response(null, { status: 302, headers: h })
+      }
+
       // ---- /auth/google/start ----
       if (pathname === '/auth/google/start') {
         if (method !== 'GET') return new Response('Method Not Allowed', { status: 405 })
@@ -767,16 +859,41 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
           })
         }
 
-        if (!allowlist.isAllowed(profile.email)) {
+        // Invite-consume runs BEFORE the allowlist check so a fresh email
+        // gets added to allowed_emails first, then trivially passes the
+        // existing isAllowed() gate. Invite cookie was set by /invite/:token.
+        const inviteToken = parseInviteCookie(req.headers.get('cookie'))
+        let consumedInviteEmail: string | null = null
+        if (inviteToken) {
+          const u = users.upsertByGoogleSub({
+            sub: profile.sub,
+            email: profile.email,
+            name: profile.name,
+            picture_url: profile.picture_url,
+          })
+          // Atomic UPDATE … WHERE used_at IS NULL — a second tap on the
+          // same link returns null and falls through to the normal flow.
+          const consumed = invites.consume(inviteToken, u.id, profile.email)
+          if (consumed) {
+            allowedEmails.add(profile.email, 'invite', consumed.created_by_user_id)
+            consumedInviteEmail = profile.email
+          }
+        }
+
+        if (!allowedEmails.isAllowed(profile.email)) {
+          const denyHeaders = new Headers({ 'content-type': 'text/html; charset=utf-8' })
+          denyHeaders.append('set-cookie', buildClearStateCookie({ secure: cookieSecure }))
+          if (inviteToken) {
+            denyHeaders.append('set-cookie', buildClearInviteCookie({ secure: cookieSecure }))
+          }
           return new Response(renderAccessDenied(profile.email), {
             status: 403,
-            headers: {
-              'content-type': 'text/html; charset=utf-8',
-              'set-cookie': buildClearStateCookie({ secure: cookieSecure }),
-            },
+            headers: denyHeaders,
           })
         }
 
+        // upsert again (or first time, if no invite token path ran above)
+        // so picture/name refresh on every sign-in.
         const user = users.upsertByGoogleSub({
           sub: profile.sub,
           email: profile.email,
@@ -785,11 +902,21 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
         })
         const session = sessions.create(user.id)
 
-        // Two Set-Cookie headers (clear state + set session). Bun's Headers
-        // supports append() for repeated names.
+        // Three Set-Cookie headers in the success path:
+        //   - clear oauth_state (used + done)
+        //   - clear invite cookie if it was present (regardless of consume
+        //     outcome — once we're past the allowlist check it's spent)
+        //   - issue the long-lived session cookie
         const h = new Headers({ location: '/' })
         h.append('set-cookie', buildClearStateCookie({ secure: cookieSecure }))
+        if (inviteToken) {
+          h.append('set-cookie', buildClearInviteCookie({ secure: cookieSecure }))
+        }
         h.append('set-cookie', buildSessionCookie(session.token, { secure: cookieSecure }))
+        if (consumedInviteEmail) {
+          // Quiet success signal in headers, mostly to make tests legible.
+          h.set('x-voice-clip-signup', 'invite')
+        }
         return new Response(null, { status: 302, headers: h })
       }
 
@@ -862,7 +989,7 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
           })
         }
 
-        if (!allowlist.isAllowed(profile.email)) {
+        if (!allowedEmails.isAllowed(profile.email)) {
           return new Response(renderAccessDenied(profile.email), {
             status: 403,
             headers: {

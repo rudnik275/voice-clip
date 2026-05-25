@@ -129,6 +129,9 @@ const userPillName = $<HTMLElement>('user-pill-name')
 const soundsToggle = $<HTMLButtonElement>('sounds-toggle')
 const soundsToggleState = $<HTMLElement>('sounds-toggle-state')
 const soundsToggleAction = $<HTMLElement>('sounds-toggle-action')
+const ownerInviteBlock = $<HTMLElement>('owner-invite-block')
+const inviteGenerateBtn = $<HTMLButtonElement>('invite-generate')
+const inviteHint = $<HTMLElement>('invite-hint')
 
 function refreshSoundsToggle() {
   const muted = isMuted()
@@ -142,6 +145,36 @@ soundsToggle.addEventListener('click', () => {
 })
 refreshSoundsToggle()
 
+// Owner-only: generate an invite link and copy it to the clipboard.
+// The button is invisible to non-owners (see bootAuth → me.is_owner toggle).
+inviteGenerateBtn.addEventListener('click', async () => {
+  if (inviteGenerateBtn.disabled) return
+  inviteGenerateBtn.disabled = true
+  const prev = inviteHint.textContent
+  inviteHint.textContent = 'Generating…'
+  try {
+    const r = await fetch('/admin/invites', { method: 'POST', credentials: 'include' })
+    if (!r.ok) {
+      inviteHint.textContent = 'Failed — try again'
+      return
+    }
+    const { url } = (await r.json()) as { token: string; url: string }
+    try {
+      await navigator.clipboard.writeText(url)
+      inviteHint.textContent = 'Copied to clipboard'
+    } catch {
+      // Clipboard API blocked — fall back to showing the URL inline so the
+      // user can long-press to copy it manually.
+      inviteHint.textContent = url
+    }
+  } catch {
+    inviteHint.textContent = 'Failed — check your connection'
+  } finally {
+    inviteGenerateBtn.disabled = false
+    setTimeout(() => { inviteHint.textContent = prev }, 4000)
+  }
+})
+
 // The shell HTML carries no user-specific text (see
 // docs/adr/0001-pwa-boot-architecture.md). On boot we paint the cached
 // identity from localStorage immediately, then fetch /me to confirm or
@@ -149,7 +182,13 @@ refreshSoundsToggle()
 // independent of each other.
 const NAME_CACHE_KEY = 'vc:name'
 
-type Me = { id: string; email: string; name: string; picture_url: string | null }
+type Me = {
+  id: string
+  email: string
+  name: string
+  picture_url: string | null
+  is_owner: boolean
+}
 
 function readCachedName(): string {
   try {
@@ -964,6 +1003,7 @@ async function bootAuth(): Promise<void> {
     writeCachedName(me.name)
     userPillName.textContent = me.name
   }
+  ownerInviteBlock.hidden = !me.is_owner
 }
 
 void bootAuth()

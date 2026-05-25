@@ -20,10 +20,16 @@ export const config = {
   googleClientId: requireEnv('GOOGLE_OAUTH_CLIENT_ID'),
   googleClientSecret: requireEnv('GOOGLE_OAUTH_CLIENT_SECRET'),
   publicUrl: requireEnv('PUBLIC_URL'),
+  // Seed list — read into the DB allowed_emails table on boot (idempotent).
+  // After that, friends arrive via invite links and the table grows.
   allowedEmails: parseAllowlist(requireEnv('VOICE_CLIP_ALLOWED_EMAILS')),
-  // Optional — when set, /admin/* endpoints (e.g. /admin/errors) check the
-  // X-Admin-Token header against this value. If unset the admin routes
-  // are 503'd so an unconfigured deploy can't be poked.
+  // Optional: marks one email as the "owner" → /me returns is_owner=true,
+  // profile UI shows the "Generate invite" button, /admin/invites accepts
+  // their session without needing the X-Admin-Token header.
+  ownerEmail: process.env.OWNER_EMAIL,
+  // Optional shared-secret for /admin/* endpoints (errors, invites). When
+  // set, ops scripts can hit them via X-Admin-Token. Unset → all admin
+  // routes return 401 (the owner session is still a valid alternative).
   adminToken: process.env.ADMIN_TOKEN,
   port: Number(process.env.PORT ?? 8080),
   dataDir: process.env.DATA_DIR ?? './data',
