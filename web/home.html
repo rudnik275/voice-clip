@@ -3,9 +3,18 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#07070b" />
+    <meta name="theme-color" content="#FFFDF5" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="voice-clip" />
     <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/svg+xml" href="/icons/voice-clip-mark.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
     <title>voice-clip</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="/style.css" />
     <link rel="modulepreload" href="/app.ts" />
     <script>
@@ -101,6 +110,14 @@
             <span class="profile-stat-label">Spent</span>
             <span class="profile-stat-value" id="cost-pill">$0.0000 · Σ $0.0000</span>
           </div>
+          <h3 class="profile-section-title">Sounds</h3>
+          <button class="device-item" id="sounds-toggle" type="button">
+            <div class="device-meta">
+              <div class="device-label">UI sounds</div>
+              <div class="device-seen" id="sounds-toggle-state">ON</div>
+            </div>
+            <div class="device-revoke" id="sounds-toggle-action">Mute</div>
+          </button>
           <h3 class="profile-section-title">Paired devices</h3>
           <div class="profile-devices" id="profile-devices"></div>
           <div class="profile-version">voice-clip · __APP_VERSION__</div>

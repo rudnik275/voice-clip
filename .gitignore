@@ -43,3 +43,6 @@ data
 
 # TLS certs from mkcert
 certs
+
+# Playwright MCP screenshot/log dump (dev-only)
+.playwright-mcp/

@@ -10,6 +10,19 @@
 //   - History modal: fetch + render, `since` cursor pagination.
 //   - Cost pill: per-user + aggregate, refreshed after every upload.
 
+import {
+  isMuted,
+  playCopy,
+  playError,
+  playModal,
+  playPause,
+  playResume,
+  playStartRec,
+  playStopRec,
+  playSuccess,
+  setMuted,
+} from './sounds'
+
 type HistoryClip = {
   seq: number
   text: string
@@ -44,6 +57,21 @@ const profileClose = $<HTMLButtonElement>('profile-close')
 const profileLogout = $<HTMLButtonElement>('profile-logout')
 const profileDevices = $<HTMLElement>('profile-devices')
 const userPillName = $<HTMLElement>('user-pill-name')
+const soundsToggle = $<HTMLButtonElement>('sounds-toggle')
+const soundsToggleState = $<HTMLElement>('sounds-toggle-state')
+const soundsToggleAction = $<HTMLElement>('sounds-toggle-action')
+
+function refreshSoundsToggle() {
+  const muted = isMuted()
+  soundsToggleState.textContent = muted ? 'Muted' : 'On'
+  soundsToggleAction.textContent = muted ? 'Unmute' : 'Mute'
+}
+
+soundsToggle.addEventListener('click', () => {
+  setMuted(!isMuted())
+  refreshSoundsToggle()
+})
+refreshSoundsToggle()
 
 // The shell HTML carries no user-specific text (see
 // docs/adr/0001-pwa-boot-architecture.md). On boot we paint the cached
@@ -86,7 +114,10 @@ let statusTimer: ReturnType<typeof setTimeout> | undefined
 
 function showStatus(msg: string, kind: 'info' | 'error' | 'success' = 'info', preview?: string) {
   statusEl.className = ''
-  if (kind === 'error') statusEl.classList.add('error')
+  if (kind === 'error') {
+    statusEl.classList.add('error')
+    playError()
+  }
   if (kind === 'success') statusEl.classList.add('success')
   if (preview) {
     statusEl.classList.add('has-preview')
@@ -179,10 +210,12 @@ function renderClip(clip: HistoryClip): HTMLElement {
         body: JSON.stringify({ seq: clip.seq }),
       })
       if (!r.ok) {
+        playError()
         showStatus('Copy failed', 'error')
         return
       }
       const body = (await r.json()) as { ok: boolean; devices: number }
+      playCopy()
       if (body.devices > 0) {
         showStatus(body.devices === 1 ? 'Sent to your Mac' : 'Sent to your Macs', 'success')
       } else {
@@ -243,6 +276,7 @@ async function loadHistory(reset: boolean): Promise<void> {
 }
 
 function openHistory() {
+  playModal()
   historyModal.hidden = false
   void loadHistory(true)
 }
@@ -350,8 +384,10 @@ async function loadDevices(): Promise<void> {
 }
 
 function openProfile() {
+  playModal()
   profileModal.hidden = false
   void loadDevices()
+  refreshSoundsToggle()
 }
 function closeProfile() {
   profileModal.hidden = true
@@ -533,6 +569,7 @@ function startMeters(s: MediaStream) {
 async function startRecording() {
   if (recording) return
   recording = true
+  playStartRec()
   cancelMicRelease() // re-recording within the idle window → keep the stream
   let s: MediaStream
   try {
@@ -589,11 +626,13 @@ function togglePause() {
     recBtn.classList.add('paused')
     recPause.classList.add('is-paused')
     recPauseLabel.textContent = 'Resume'
+    playPause()
   } else {
     pausedTotalMs += Date.now() - pausedAt
     recBtn.classList.remove('paused')
     recPause.classList.remove('is-paused')
     recPauseLabel.textContent = 'Pause'
+    playResume()
   }
 }
 
@@ -708,6 +747,7 @@ function endRecordingUi() {
 async function stopRecording() {
   if (!recording) return
   recording = false
+  playStopRec()
   const durationMs = elapsedMs()
 
   // Start still in flight (ultra-fast tap) or recorder never armed — nothing
@@ -774,6 +814,7 @@ async function stopRecording() {
         /* clipboard unavailable — toast still shows the transcript */
       }
     }
+    playSuccess()
   } catch (e) {
     if (e instanceof TooShort) {
       showStatus('Слишком коротко — запиши подольше', 'info')

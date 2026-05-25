@@ -1,11 +1,25 @@
 {
-  "name": "VoiceClip",
-  "short_name": "VoiceClip",
+  "name": "voice-clip",
+  "short_name": "voice-clip",
   "description": "Self-hosted voice → clipboard",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "orientation": "any",
-  "background_color": "#07070b",
-  "theme_color": "#07070b"
+  "background_color": "#FFFDF5",
+  "theme_color": "#FFFDF5",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
 }

@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!--
+    voice-clip neo-brutalism mark.
+    - Yellow sticker (rotated -4deg) on cream background
+    - Bold microphone glyph in black inside the sticker
+    - Small red dot above (recording indicator)
+    - Hard black offset shadow under the sticker (no blur)
+    Safe zone: stickers + shadow fit inside the central 80% (819px) so this
+    renders without clipping when used as an Android maskable icon.
+  -->
+  <defs>
+    <clipPath id="clip">
+      <rect x="0" y="0" width="1024" height="1024"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#clip)">
+    <!-- Background (cream) -->
+    <rect x="0" y="0" width="1024" height="1024" fill="#FFFDF5"/>
+
+    <!-- Dot grid (subtle) -->
+    <g fill="#09090B" opacity="0.10">
+      <circle cx="128" cy="128" r="6"/><circle cx="256" cy="128" r="6"/><circle cx="384" cy="128" r="6"/><circle cx="512" cy="128" r="6"/><circle cx="640" cy="128" r="6"/><circle cx="768" cy="128" r="6"/><circle cx="896" cy="128" r="6"/>
+      <circle cx="128" cy="256" r="6"/><circle cx="896" cy="256" r="6"/>
+      <circle cx="128" cy="384" r="6"/><circle cx="896" cy="384" r="6"/>
+      <circle cx="128" cy="512" r="6"/><circle cx="896" cy="512" r="6"/>
+      <circle cx="128" cy="640" r="6"/><circle cx="896" cy="640" r="6"/>
+      <circle cx="128" cy="768" r="6"/><circle cx="896" cy="768" r="6"/>
+      <circle cx="128" cy="896" r="6"/><circle cx="256" cy="896" r="6"/><circle cx="384" cy="896" r="6"/><circle cx="512" cy="896" r="6"/><circle cx="640" cy="896" r="6"/><circle cx="768" cy="896" r="6"/><circle cx="896" cy="896" r="6"/>
+    </g>
+
+    <!-- Tilted sticker + mic, rotated -4deg around centre -->
+    <g transform="rotate(-4 512 512)">
+      <!-- Hard offset shadow -->
+      <rect x="170" y="170" width="700" height="700" fill="#09090B"/>
+      <!-- Yellow sticker face with thick black border -->
+      <rect x="138" y="138" width="700" height="700" fill="#FFD93D" stroke="#09090B" stroke-width="32"/>
+
+      <!-- Microphone capsule (rounded pill) -->
+      <rect x="396" y="280" width="184" height="320" rx="92" ry="92"
+            fill="#09090B"/>
+      <!-- Mic ribs (decorative grille lines inside the capsule) -->
+      <g stroke="#FFD93D" stroke-width="14" stroke-linecap="round">
+        <line x1="430" y1="360" x2="546" y2="360"/>
+        <line x1="430" y1="410" x2="546" y2="410"/>
+        <line x1="430" y1="460" x2="546" y2="460"/>
+        <line x1="430" y1="510" x2="546" y2="510"/>
+      </g>
+      <!-- Mic arm (U-shape under capsule) -->
+      <path d="M 332 540
+               L 332 620
+               Q 332 720 488 720
+               Q 644 720 644 620
+               L 644 540"
+            fill="none" stroke="#09090B" stroke-width="36" stroke-linecap="round"/>
+      <!-- Mic stand stem -->
+      <rect x="468" y="700" width="40" height="60" fill="#09090B"/>
+      <!-- Mic stand base -->
+      <rect x="380" y="760" width="216" height="40" fill="#09090B"/>
+
+      <!-- Red recording dot (top-right of sticker) -->
+      <circle cx="760" cy="200" r="48" fill="#FF6B6B" stroke="#09090B" stroke-width="14"/>
+    </g>
+  </g>
+</svg>
