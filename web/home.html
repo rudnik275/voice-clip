@@ -106,6 +106,16 @@
           <button class="ghost-btn danger" id="profile-logout" type="button">Sign out</button>
         </div>
         <div class="profile-body">
+          <!-- Quota chip — populated by JS from /me.usage. Hidden until JS
+               has the numbers, so the empty placeholder doesn't flash. -->
+          <a id="quota-chip" class="quota-chip" href="/pro" hidden>
+            <span class="quota-chip-row">
+              <span class="quota-chip-label" id="quota-label">Free plan</span>
+              <span class="quota-chip-cta" id="quota-cta">Upgrade</span>
+            </span>
+            <span class="quota-bar"><span class="quota-bar-fill" id="quota-bar-fill"></span></span>
+            <span class="quota-chip-meta" id="quota-meta">— / —</span>
+          </a>
           <h3 class="profile-section-title">Sounds</h3>
           <button class="device-item" id="sounds-toggle" type="button">
             <div class="device-meta">

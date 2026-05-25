@@ -24,6 +24,9 @@ import { createCostStore, type CostStore } from './cost-store'
 import { createDevicesStore, type DevicesStore } from './devices-store'
 import { createErrorsStore, type ErrorsStore } from './errors-store'
 import { createFailedAudioStore } from './failed-audio-store'
+import { createAllowedEmailsStore, type AllowedEmailsStore } from './allowed-emails-store'
+import { createInvitesStore, type InvitesStore } from './invites-store'
+import { createPlansStore, monthKeyOf, type PlansStore } from './plans-store'
 import {
   createPendingDeliveriesStore,
   type PendingDeliveriesStore,
@@ -31,8 +34,6 @@ import {
 import { createLiveBus, type LiveBus } from './live-bus'
 import type { TranscriptionResult } from './transcribe'
 import { calcCostUsd } from './pricing'
-import { createAllowedEmailsStore, type AllowedEmailsStore } from './allowed-emails-store'
-import { createInvitesStore, type InvitesStore } from './invites-store'
 import { createGoogleOAuth, type GoogleFetcher, type GoogleOAuth } from './google-oauth'
 import {
   buildClearInviteCookie,
@@ -80,6 +81,10 @@ export interface ServerDeps {
   errors?: ErrorsStore
   allowedEmails?: AllowedEmailsStore
   invites?: InvitesStore
+  plans?: PlansStore
+  // Override the free-tier monthly clip cap. Default 30. 0 = disable the
+  // gate entirely (useful for tests + early ops).
+  freeTierMonthlyLimit?: number
   liveBus?: LiveBus
   transcribe?: (input: Uint8Array, filename: string) => Promise<TranscriptionResult>
   db?: DB
@@ -171,6 +176,8 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
   if (ownerEmail) allowedEmails.add(ownerEmail, 'env')
 
   const invites = deps.invites ?? createInvitesStore(db, deps.now)
+  const plans = deps.plans ?? createPlansStore(db, deps.now)
+  const FREE_TIER_LIMIT = deps.freeTierMonthlyLimit ?? 30
   const liveBus = deps.liveBus ?? createLiveBus()
 
   // Simple per-IP rate limit for /api/errors. The endpoint is unauthed so
@@ -243,6 +250,7 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
   // ----- prebuilt static pages -----
   const loginTplRaw = (await readWebFile('login.html')).replace('__APP_VERSION__', APP_VERSION)
   const accessDeniedTplRaw = await readWebFile('access-denied.html')
+  const proHtml = await readWebFile('pro.html')
   const homeTplRaw = await readWebFile('home.html')
   const styleCss = await readWebFile('style.css')
   const manifestRaw = await readWebFile('manifest.webmanifest')
@@ -500,6 +508,8 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
         const authed = resolveUserFromRequest(req, sessions, users)
         if (!authed) return unauthorized()
         const u = authed.user
+        const plan = plans.getPlan(u.id)
+        const usage = plans.getUsage(u.id, monthKeyOf((deps.now ?? Date.now)()))
         return Response.json({
           id: u.id,
           email: u.email,
@@ -510,6 +520,12 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
           // no one is owner (UI hides the button; admin token still works
           // server-side for ops scripts).
           is_owner: ownerEmail !== null && u.email.toLowerCase() === ownerEmail,
+          plan,
+          usage: {
+            clips_this_month: usage,
+            // null = unlimited; 0 = quota disabled (treated as unlimited UI-side).
+            free_monthly_limit: FREE_TIER_LIMIT > 0 ? FREE_TIER_LIMIT : null,
+          },
         })
       }
 
@@ -532,6 +548,26 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
         if (method !== 'POST') return new Response('Method Not Allowed', { status: 405 })
         const authed = resolveUserFromRequest(req, sessions, users)
         if (!authed) return unauthorized()
+
+        // Quota gate (free tier only). Check BEFORE reading the body so a
+        // capped user doesn't burn bandwidth / blob memory. Pro = unlimited.
+        const month = monthKeyOf((deps.now ?? Date.now)())
+        const userPlan = plans.getPlan(authed.user.id)
+        if (userPlan === 'free' && FREE_TIER_LIMIT > 0) {
+          const used = plans.getUsage(authed.user.id, month)
+          if (used >= FREE_TIER_LIMIT) {
+            return Response.json(
+              {
+                error: 'free tier monthly limit reached',
+                code: 'quota_exceeded',
+                plan: 'free',
+                used,
+                limit: FREE_TIER_LIMIT,
+              },
+              { status: 402 },
+            )
+          }
+        }
 
         let form: Awaited<ReturnType<Request['formData']>>
         try {
@@ -611,6 +647,10 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
           costUsd,
         })
         if (costUsd > 0) costs.add(authed.user.id, costUsd)
+        // Bump the monthly clip counter for the quota gate. Increment AFTER
+        // transcription succeeded — failed uploads (audio too short, etc.)
+        // shouldn't count toward the limit.
+        plans.incrementUsage(authed.user.id, month)
 
         // Fan-out: push the clip to every paired Mac for this user. A Mac
         // with a live SSE stream gets it instantly; one that is offline gets
@@ -1109,6 +1149,12 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
       // 401-redirect; the OAuth start link on this page kicks off the
       // existing /auth/google/start flow, whose callback puts the user
       // back at `/`.
+      // ---- /pro ---- (placeholder upgrade page, no auth required)
+      if (pathname === '/pro') {
+        if (method !== 'GET') return new Response('Method Not Allowed', { status: 405 })
+        return htmlResponse(proHtml)
+      }
+
       if (pathname === '/login') {
         if (method !== 'GET') return new Response('Method Not Allowed', { status: 405 })
         return htmlResponse(loginHtml)

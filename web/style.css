@@ -862,6 +862,75 @@ main {
   margin-top: 4px;
 }
 
+/* === Quota chip (in profile modal) === */
+.quota-chip {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px 16px;
+  background: var(--violet);
+  border: var(--border);
+  box-shadow: var(--shadow-sm);
+  text-decoration: none;
+  color: var(--fg);
+  transition: transform var(--press), box-shadow var(--press);
+}
+.quota-chip:active {
+  transform: translate(4px, 4px);
+  box-shadow: 0 0 0 var(--fg);
+}
+.quota-chip.is-pro {
+  background: var(--green);
+}
+.quota-chip.is-exhausted {
+  background: var(--red);
+  color: var(--white);
+}
+.quota-chip-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+.quota-chip-label {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.quota-chip-cta {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  background: var(--white);
+  color: var(--fg);
+  border: 2px solid var(--fg);
+}
+.quota-chip.is-pro .quota-chip-cta { display: none; }
+.quota-bar {
+  height: 10px;
+  background: var(--white);
+  border: 2px solid var(--fg);
+  overflow: hidden;
+  position: relative;
+}
+.quota-bar-fill {
+  display: block;
+  height: 100%;
+  width: 0%;
+  background: var(--fg);
+  transition: width 220ms ease;
+}
+.quota-chip.is-pro .quota-bar { display: none; }
+.quota-chip-meta {
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+
 .profile-version {
   margin-top: 32px;
   text-align: center;
