@@ -785,18 +785,6 @@ main {
   color: var(--fg);
 }
 
-.history-cost {
-  display: inline-block;
-  font-size: 10px;
-  font-weight: 700;
-  padding: 3px 8px;
-  border-radius: 5px;
-  background: var(--fg);
-  color: var(--yellow);
-  font-variant-numeric: tabular-nums;
-  border: 2px solid var(--fg);
-}
-
 .history-empty {
   text-align: center;
   color: var(--muted);
@@ -872,34 +860,6 @@ main {
 }
 .profile-section-title:first-child {
   margin-top: 4px;
-}
-
-.profile-stat {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 16px 18px;
-  background: var(--yellow);
-  border: var(--border);
-  border-radius: 14px;
-  box-shadow: var(--shadow-sm);
-}
-
-.profile-stat-label {
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.10em;
-  text-transform: uppercase;
-  color: var(--fg);
-}
-
-.profile-stat-value {
-  font-size: 18px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  color: var(--fg);
-  letter-spacing: -0.01em;
 }
 
 .profile-version {

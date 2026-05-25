@@ -8,7 +8,6 @@
 //     the upload, so iOS Safari keeps the user-gesture clipboard grant alive
 //     across the async transcription round-trip.
 //   - History modal: fetch + render, `since` cursor pagination.
-//   - Cost pill: per-user + aggregate, refreshed after every upload.
 
 import {
   isMuted,
@@ -28,12 +27,10 @@ type HistoryClip = {
   text: string
   source: string
   recordedAt: string
-  costUsd: number
   ts: number
 }
 type HistoryPage = { items: HistoryClip[]; nextSince?: number }
-type CostResponse = { user: number; aggregate: number }
-type UploadResponse = { text: string; seq: number; recordedAt: string; cost: number }
+type UploadResponse = { text: string; seq: number; recordedAt: string }
 
 const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T
 
@@ -43,7 +40,6 @@ const recTime = $<HTMLElement>('rec-time')
 const recPause = $<HTMLButtonElement>('rec-pause')
 const recPauseLabel = $<HTMLElement>('rec-pause-label')
 const statusEl = $<HTMLElement>('status')
-const costPill = $<HTMLElement>('cost-pill')
 const historyBtn = $<HTMLButtonElement>('history-btn')
 const historyModal = $<HTMLElement>('history-modal')
 const historyList = $<HTMLElement>('history-list')
@@ -137,23 +133,6 @@ function showStatus(msg: string, kind: 'info' | 'error' | 'success' = 'info', pr
   statusTimer = setTimeout(() => statusEl.classList.remove('show'), 4200)
 }
 
-// ---- cost pill ----
-
-function fmtUsd(n: number): string {
-  return `$${n.toFixed(n < 1 ? 4 : 2)}`
-}
-
-async function refreshCost(): Promise<void> {
-  try {
-    const r = await fetch('/cost', { credentials: 'include' })
-    if (!r.ok) return
-    const c = (await r.json()) as CostResponse
-    costPill.textContent = `${fmtUsd(c.user)} · Σ ${fmtUsd(c.aggregate)}`
-  } catch {
-    /* network blip — leave the last good value */
-  }
-}
-
 // ---- history modal ----
 
 let nextSince: number | undefined
@@ -179,10 +158,7 @@ function renderClip(clip: HistoryClip): HTMLElement {
   const time = document.createElement('span')
   time.className = 'history-time'
   time.textContent = fmtTime(clip.recordedAt)
-  const cost = document.createElement('span')
-  cost.className = 'history-cost'
-  cost.textContent = fmtUsd(clip.costUsd)
-  head.append(time, cost)
+  head.append(time)
 
   const text = document.createElement('p')
   text.className = 'history-text'
@@ -709,7 +685,6 @@ function uploadAndTranscribe(blob: Blob, recordedAt: string): Promise<string> {
 
     if (r.ok) {
       const body = (await r.json()) as UploadResponse
-      void refreshCost()
       showStatus('Transcribed', 'success', body.text)
       return body.text
     }
@@ -902,9 +877,6 @@ async function bootAuth(): Promise<void> {
     writeCachedName(me.name)
     userPillName.textContent = me.name
   }
-  // Cost pill is non-critical for the first paint, so we kick it off
-  // only after the auth check returned green.
-  void refreshCost()
 }
 
 void bootAuth()
