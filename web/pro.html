@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#FFFDF5" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <link rel="icon" type="image/svg+xml" href="/icons/voice-clip-mark.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <title>voice-clip Pro</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+    <style>
+      /* Self-contained Neo-Brutalism — keeps /pro renderable even if the
+         shell bundle hasn't been cached. */
+      * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+      :root {
+        --bg: #FFFDF5;
+        --fg: #09090B;
+        --muted: #5A5A6E;
+        --white: #FFFFFF;
+        --red: #FF6B6B;
+        --violet: #B5A8FF;
+        --yellow: #FFD93D;
+        --green: #A7E8BD;
+        --press: 100ms linear;
+      }
+      html, body {
+        margin: 0; padding: 0; min-height: 100%;
+        background: var(--bg); color: var(--fg);
+        font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        letter-spacing: -0.005em;
+      }
+      body::before {
+        content: ""; position: fixed; inset: 0;
+        background-image: radial-gradient(circle at 1px 1px, rgba(9,9,11,0.12) 1.4px, transparent 0);
+        background-size: 24px 24px;
+        pointer-events: none; z-index: 0; opacity: 0.55;
+        mask-image: radial-gradient(ellipse 90% 80% at 50% 50%, black 30%, transparent 95%);
+        -webkit-mask-image: radial-gradient(ellipse 90% 80% at 50% 50%, black 30%, transparent 95%);
+      }
+      .wrap {
+        position: relative; z-index: 1;
+        display: flex; flex-direction: column;
+        align-items: center; justify-content: center;
+        min-height: 100dvh; gap: 22px;
+        padding: 32px 22px; text-align: center;
+      }
+      .sticker {
+        display: inline-block;
+        padding: 10px 20px 12px;
+        background: var(--violet);
+        border: 3px solid var(--fg);
+        box-shadow: 4px 4px 0 var(--fg);
+        transform: rotate(-2deg);
+        font-size: 13px;
+        font-weight: 800;
+        letter-spacing: 0.10em;
+        text-transform: uppercase;
+        line-height: 1;
+      }
+      h1 {
+        font-size: 38px;
+        font-weight: 800;
+        letter-spacing: -0.03em;
+        margin: 0;
+        line-height: 1.05;
+      }
+      h1 .accent {
+        background: var(--yellow);
+        padding: 2px 10px;
+        border: 3px solid var(--fg);
+        box-shadow: 4px 4px 0 var(--fg);
+        display: inline-block;
+        transform: rotate(-1.5deg);
+      }
+      .card {
+        width: min(420px, 92vw);
+        padding: 26px 24px 28px;
+        background: var(--white);
+        border: 4px solid var(--fg);
+        box-shadow: 10px 10px 0 var(--fg);
+        display: flex; flex-direction: column;
+        gap: 16px;
+        text-align: left;
+      }
+      .price-row {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+      }
+      .price {
+        font-size: 44px;
+        font-weight: 800;
+        letter-spacing: -0.03em;
+        line-height: 1;
+      }
+      .price-sub {
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--muted);
+      }
+      ul.bullets {
+        list-style: none;
+        padding: 0;
+        margin: 4px 0 0;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      ul.bullets li {
+        display: flex;
+        gap: 10px;
+        align-items: flex-start;
+        font-size: 14px;
+        line-height: 1.45;
+      }
+      ul.bullets li::before {
+        content: "✓";
+        flex: none;
+        font-weight: 800;
+        background: var(--green);
+        border: 2px solid var(--fg);
+        padding: 2px 6px;
+        line-height: 1;
+      }
+      .cta {
+        display: inline-block;
+        width: 100%;
+        padding: 14px 18px;
+        background: var(--red);
+        color: var(--white);
+        font: inherit;
+        font-size: 16px;
+        font-weight: 700;
+        text-align: center;
+        border: 3px solid var(--fg);
+        box-shadow: 6px 6px 0 var(--fg);
+        cursor: not-allowed;
+        opacity: 0.85;
+      }
+      .cta-note {
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--muted);
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        margin-top: -4px;
+        text-align: center;
+      }
+      .back {
+        margin-top: 8px;
+        font-size: 13px;
+        font-weight: 700;
+        color: var(--fg);
+        text-decoration: underline;
+        text-decoration-thickness: 2px;
+        text-underline-offset: 3px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <span class="sticker">Coming soon</span>
+      <h1>Get <span class="accent">Pro</span></h1>
+      <div class="card">
+        <div class="price-row">
+          <span class="price">$5</span>
+          <span class="price-sub">/ month</span>
+        </div>
+        <ul class="bullets">
+          <li>Unlimited transcriptions — no monthly cap</li>
+          <li>Priority transcription queue when traffic spikes</li>
+          <li>Future: GPT post-processing presets per session</li>
+          <li>Future: long-form audio + speaker labels</li>
+        </ul>
+        <button type="button" class="cta" disabled>Upgrade — coming soon</button>
+        <div class="cta-note">payments not wired up yet</div>
+      </div>
+      <a class="back" href="/">← Back to recording</a>
+    </div>
+  </body>
+</html>

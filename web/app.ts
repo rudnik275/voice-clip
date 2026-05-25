@@ -132,6 +132,38 @@ const soundsToggleAction = $<HTMLElement>('sounds-toggle-action')
 const ownerInviteBlock = $<HTMLElement>('owner-invite-block')
 const inviteGenerateBtn = $<HTMLButtonElement>('invite-generate')
 const inviteHint = $<HTMLElement>('invite-hint')
+const quotaChip = $<HTMLAnchorElement>('quota-chip')
+const quotaLabel = $<HTMLElement>('quota-label')
+const quotaCta = $<HTMLElement>('quota-cta')
+const quotaBarFill = $<HTMLElement>('quota-bar-fill')
+const quotaMeta = $<HTMLElement>('quota-meta')
+
+function paintQuotaChip(me: Me): void {
+  const plan = me.plan ?? 'free'
+  const used = me.usage?.clips_this_month ?? 0
+  const limit = me.usage?.free_monthly_limit ?? null
+
+  quotaChip.classList.remove('is-pro', 'is-exhausted')
+  if (plan === 'pro') {
+    quotaChip.classList.add('is-pro')
+    quotaLabel.textContent = 'Pro plan'
+    quotaMeta.textContent = 'Unlimited transcriptions'
+    quotaChip.hidden = false
+    return
+  }
+  if (limit === null || limit === 0) {
+    // Quota disabled on the server side — nothing meaningful to show.
+    quotaChip.hidden = true
+    return
+  }
+  const ratio = Math.min(1, used / limit)
+  quotaBarFill.style.width = `${Math.round(ratio * 100)}%`
+  quotaLabel.textContent = 'Free plan'
+  quotaCta.textContent = used >= limit ? 'Upgrade now' : 'Upgrade'
+  quotaMeta.textContent = `${used} / ${limit} this month`
+  if (used >= limit) quotaChip.classList.add('is-exhausted')
+  quotaChip.hidden = false
+}
 
 function refreshSoundsToggle() {
   const muted = isMuted()
@@ -188,6 +220,11 @@ type Me = {
   name: string
   picture_url: string | null
   is_owner: boolean
+  plan?: 'free' | 'pro'
+  usage?: {
+    clips_this_month: number
+    free_monthly_limit: number | null
+  }
 }
 
 function readCachedName(): string {
@@ -1004,6 +1041,7 @@ async function bootAuth(): Promise<void> {
     userPillName.textContent = me.name
   }
   ownerInviteBlock.hidden = !me.is_owner
+  paintQuotaChip(me)
 }
 
 void bootAuth()

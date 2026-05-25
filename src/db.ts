@@ -98,14 +98,6 @@ const SCHEMA_SQL = `
   -- Error log — DIY observability replacing "user emails me when something
   -- breaks". Captures both client-side reports (POST /api/errors, no auth
   -- required so pre-login crashes are reachable) and 5xx server responses.
-  -- type is free-form text; common values: js_exception, upload_failed,
-  -- transcription_error, audio_encode_error, network_error, sw_error,
-  -- indexeddb_error, daemon_error, server_5xx. user_id is nullable for
-  -- pre-auth reports. context is a serialised JSON blob (deviceInfo,
-  -- statusCode, audio metadata, ...). audio_file is the path inside the
-  -- DATA_DIR to the saved failing audio blob (when applicable), so the
-  -- /admin replay endpoint can re-run transcribe() on it. resolved flips
-  -- to 1 after a successful replay so the admin list shrinks.
   CREATE TABLE IF NOT EXISTS errors (
     id          TEXT PRIMARY KEY,
     ts          INTEGER NOT NULL,
@@ -123,11 +115,8 @@ const SCHEMA_SQL = `
   CREATE INDEX IF NOT EXISTS idx_errors_user_id ON errors(user_id);
   CREATE INDEX IF NOT EXISTS idx_errors_resolved ON errors(resolved);
 
-  -- Allowed-email allowlist, DB-backed. Replaces the env-var-only allowlist
-  -- that needed a redeploy to add a friend. Seeded from
-  -- VOICE_CLIP_ALLOWED_EMAILS on boot so existing users keep working;
-  -- invite-consume adds rows on the fly. added_via is 'env' / 'invite' /
-  -- 'manual' for audit. email is stored lowercased.
+  -- Allowed-email allowlist, DB-backed. Seeded from VOICE_CLIP_ALLOWED_EMAILS
+  -- on boot; invite-consume adds rows on the fly.
   CREATE TABLE IF NOT EXISTS allowed_emails (
     email      TEXT PRIMARY KEY,
     added_at   INTEGER NOT NULL,
@@ -135,11 +124,7 @@ const SCHEMA_SQL = `
     invited_by TEXT
   );
 
-  -- One-time invite tokens. Created by the owner via POST /admin/invites,
-  -- consumed atomically by /auth/google/callback when the invite cookie is
-  -- present. used_at + used_by_user_id flip when consumed so the same link
-  -- can't bring in a second user. invite cookies are short-lived (10min)
-  -- so an unconsumed token left in the wild times out client-side anyway.
+  -- One-time invite tokens. Atomic consume guarded by used_at IS NULL.
   CREATE TABLE IF NOT EXISTS invites (
     token              TEXT PRIMARY KEY,
     created_by_user_id TEXT,
@@ -152,6 +137,26 @@ const SCHEMA_SQL = `
   );
 
   CREATE INDEX IF NOT EXISTS idx_invites_created_by ON invites(created_by_user_id);
+
+  -- Per-user subscription plan ('free' | 'pro'). Missing row → implicit
+  -- 'free'. Owner flips someone to Pro by editing the DB directly until
+  -- Stripe is wired up: UPDATE user_plans SET plan='pro' WHERE user_id=?.
+  CREATE TABLE IF NOT EXISTS user_plans (
+    user_id    TEXT PRIMARY KEY,
+    plan       TEXT NOT NULL DEFAULT 'free',
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  -- Monthly clip-counter per user. /upload increments after a successful
+  -- transcription; the free-tier quota gate reads the same row.
+  CREATE TABLE IF NOT EXISTS usage_counters (
+    user_id     TEXT NOT NULL,
+    month_key   TEXT NOT NULL,
+    clips_count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, month_key),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
 `
 
 export function openDb(path: string): DB {
