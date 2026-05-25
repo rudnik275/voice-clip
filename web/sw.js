@@ -23,6 +23,29 @@ const PRECACHE_URLS = [
   `/app.ts?v=${VERSION}`,
 ]
 
+// DIY observability (#55): forward any uncaught SW exception or rejected
+// promise to /api/errors so we don't lose visibility into the background
+// thread. Best-effort; the SW must NOT throw a second time from this path.
+function reportSwError(type, err, extra) {
+  try {
+    const message = err && err.message ? err.message : String(err || 'unknown')
+    const stack = err && err.stack ? err.stack : undefined
+    fetch('/api/errors', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      keepalive: true,
+      body: JSON.stringify({
+        type,
+        message,
+        stack,
+        context: { source: 'sw', ...extra },
+      }),
+    }).catch(() => {})
+  } catch {}
+}
+self.addEventListener('error', (e) => reportSwError('sw_error', e.error || e.message))
+self.addEventListener('unhandledrejection', (e) => reportSwError('sw_error', e.reason))
+
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE).then((cache) => cache.addAll(PRECACHE_URLS)),

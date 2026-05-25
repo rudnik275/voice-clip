@@ -22,6 +22,79 @@ import {
   setMuted,
 } from './sounds'
 
+// ---- DIY observability (#55) ----
+//
+// reportError fires-and-forgets a JSON POST to /api/errors. The endpoint is
+// unauthed (so pre-login crashes still land) and rate-limited server-side
+// by client IP. We never await it from the throwing code path — failures
+// inside the reporter must NOT bubble back and crash the app a second time.
+
+export type ErrorReportType =
+  | 'js_exception'
+  | 'unhandled_rejection'
+  | 'upload_failed'
+  | 'transcription_error'
+  | 'audio_encode_error'
+  | 'network_error'
+  | 'mediarecorder_error'
+  | 'sw_error'
+  | 'indexeddb_error'
+
+function reportError(
+  type: ErrorReportType,
+  err: unknown,
+  context?: Record<string, unknown>,
+): void {
+  try {
+    const message =
+      err instanceof Error
+        ? err.message
+        : typeof err === 'string'
+          ? err
+          : (() => {
+              try { return JSON.stringify(err) } catch { return String(err) }
+            })()
+    const stack = err instanceof Error ? err.stack : undefined
+    void fetch('/api/errors', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      credentials: 'include',
+      keepalive: true,
+      body: JSON.stringify({
+        type,
+        message,
+        stack,
+        context: {
+          ...context,
+          url: location.pathname,
+          userAgent: navigator.userAgent,
+          ts: new Date().toISOString(),
+        },
+      }),
+    }).catch(() => {
+      /* the reporter is best-effort — swallow */
+    })
+  } catch {
+    /* don't let the reporter throw */
+  }
+}
+
+window.addEventListener('error', (event) => {
+  reportError('js_exception', event.error ?? event.message, {
+    filename: event.filename,
+    lineno: event.lineno,
+    colno: event.colno,
+  })
+})
+
+window.addEventListener('unhandledrejection', (event) => {
+  reportError('unhandled_rejection', event.reason)
+})
+
+// Re-export for module-internal call sites — the upload failure paths and
+// any other catch handlers fire this directly with the right type.
+export { reportError }
+
 type HistoryClip = {
   seq: number
   text: string
@@ -572,6 +645,12 @@ async function startRecording() {
   mediaRecorder.ondataavailable = (e) => {
     if (e.data.size > 0) chunks.push(e.data)
   }
+  mediaRecorder.onerror = (e) => {
+    reportError('mediarecorder_error', (e as ErrorEvent).error ?? 'MediaRecorder error', {
+      mime: recordMime,
+      state: mediaRecorder?.state,
+    })
+  }
   // timeslice → periodic dataavailable, so audio is never lost even if the
   // final flush at stop() is abrupt.
   mediaRecorder.start(250)
@@ -673,13 +752,14 @@ function uploadAndTranscribe(blob: Blob, recordedAt: string): Promise<string> {
     let r: Response
     try {
       r = await fetch('/upload', { method: 'POST', body: fd, credentials: 'include' })
-    } catch {
+    } catch (e) {
       // transport-level failure (tunnel/connection dropped) — retry
       if (n < UPLOAD_MAX_ATTEMPTS) {
         showStatus(`Сеть нестабильна — повтор ${n}/${UPLOAD_MAX_ATTEMPTS - 1}…`, 'info')
         await delay(uploadBackoffMs(n))
         return attempt(n + 1)
       }
+      reportError('network_error', e, { endpoint: '/upload', attempt: n, blobBytes: blob.size, mime: blob.type })
       throw new Error('сеть недоступна — запись не отправлена')
     }
 
@@ -696,7 +776,14 @@ function uploadAndTranscribe(blob: Blob, recordedAt: string): Promise<string> {
       return attempt(n + 1)
     }
 
-    throw new Error(await failureMessage(r))
+    const msg = await failureMessage(r)
+    reportError(r.status === 502 ? 'transcription_error' : 'upload_failed', msg, {
+      endpoint: '/upload',
+      status: r.status,
+      blobBytes: blob.size,
+      mime: blob.type,
+    })
+    throw new Error(msg)
   }
 
   return attempt(1)

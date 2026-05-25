@@ -22,6 +22,8 @@ import { createSessionsStore, type SessionsStore } from './sessions-store'
 import { createHistoryStore, type HistoryStore } from './history-store'
 import { createCostStore, type CostStore } from './cost-store'
 import { createDevicesStore, type DevicesStore } from './devices-store'
+import { createErrorsStore, type ErrorsStore } from './errors-store'
+import { createFailedAudioStore } from './failed-audio-store'
 import {
   createPendingDeliveriesStore,
   type PendingDeliveriesStore,
@@ -55,6 +57,8 @@ export interface ServerDeps {
   googleClientId?: string
   googleClientSecret?: string
   publicUrl?: string
+  // Optional shared-secret gate for /admin/* (X-Admin-Token header).
+  adminToken?: string
   // Test seams
   users?: UsersStore
   sessions?: SessionsStore
@@ -62,6 +66,7 @@ export interface ServerDeps {
   costs?: CostStore
   devices?: DevicesStore
   pendingDeliveries?: PendingDeliveriesStore
+  errors?: ErrorsStore
   liveBus?: LiveBus
   transcribe?: (input: Uint8Array, filename: string) => Promise<TranscriptionResult>
   db?: DB
@@ -141,7 +146,42 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
   const devices = deps.devices ?? createDevicesStore(db, deps.now)
   const pendingDeliveries =
     deps.pendingDeliveries ?? createPendingDeliveriesStore(db, deps.now)
+  const errors = deps.errors ?? createErrorsStore(db, deps.now)
+  const failedAudio = createFailedAudioStore(deps.dataDir)
   const liveBus = deps.liveBus ?? createLiveBus()
+
+  // Simple per-IP rate limit for /api/errors. The endpoint is unauthed so
+  // it can catch pre-login crashes; in exchange we cap a single IP at 60
+  // reports per rolling minute (generous — real crashes don't loop fast).
+  const ERROR_RATE_LIMIT = 60
+  const ERROR_RATE_WINDOW_MS = 60_000
+  const errorRateBuckets = new Map<string, { count: number; resetAt: number }>()
+
+  function adminTokenOk(req: Request): boolean {
+    if (!deps.adminToken) return false
+    return req.headers.get('x-admin-token') === deps.adminToken
+  }
+
+  function clientIp(req: Request): string {
+    // Cloudflare Tunnel preserves the real client IP in CF-Connecting-IP.
+    return (
+      req.headers.get('cf-connecting-ip') ||
+      req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
+      'unknown'
+    )
+  }
+
+  function rateLimitErrorReport(ip: string): boolean {
+    const now = (deps.now ?? Date.now)()
+    const bucket = errorRateBuckets.get(ip)
+    if (!bucket || bucket.resetAt < now) {
+      errorRateBuckets.set(ip, { count: 1, resetAt: now + ERROR_RATE_WINDOW_MS })
+      return true
+    }
+    if (bucket.count >= ERROR_RATE_LIMIT) return false
+    bucket.count += 1
+    return true
+  }
   // The real transcriber pulls in `./config` (which fail-fasts on missing
   // OPENAI_API_KEY) and the OpenAI client. Load it lazily and ONLY when no
   // stub is injected, so store/auth/integration tests that pass a stub never
@@ -329,6 +369,102 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
         })
       }
 
+      // ---- /api/errors ---- (client error reporting, no auth)
+      if (pathname === '/api/errors') {
+        if (method !== 'POST') return new Response('Method Not Allowed', { status: 405 })
+        if (!rateLimitErrorReport(clientIp(req))) {
+          return Response.json({ error: 'rate limited' }, { status: 429 })
+        }
+        let payload: Record<string, unknown>
+        try {
+          payload = (await req.json()) as Record<string, unknown>
+        } catch {
+          return Response.json({ error: 'invalid json' }, { status: 400 })
+        }
+        if (typeof payload.type !== 'string' || typeof payload.message !== 'string') {
+          return Response.json({ error: 'type + message required' }, { status: 400 })
+        }
+        // Hard caps on the payload — we don't want a runaway stack trace
+        // ballooning the DB row.
+        const trim = (s: unknown, max: number): string | null =>
+          typeof s === 'string' ? s.slice(0, max) : null
+        const authed = resolveUserFromRequest(req, sessions, users)
+        errors.insert({
+          type: payload.type.slice(0, 64),
+          message: payload.message.slice(0, 2_000),
+          stack: trim(payload.stack, 16_000),
+          context: payload.context && typeof payload.context === 'object'
+            ? (payload.context as Record<string, unknown>)
+            : null,
+          user_id: authed?.user.id ?? null,
+        })
+        return Response.json({ ok: true })
+      }
+
+      // ---- /admin/errors ---- (admin-token gated read)
+      if (pathname === '/admin/errors') {
+        if (!adminTokenOk(req)) return new Response('Unauthorized', { status: 401 })
+        if (method !== 'GET') return new Response('Method Not Allowed', { status: 405 })
+        const includeResolved = url.searchParams.get('all') === '1'
+        const limit = Math.min(500, Number(url.searchParams.get('limit') ?? 200))
+        const rows = errors.list({ limit, includeResolved })
+        // Join the user name for at-a-glance triage.
+        const out = rows.map((e) => {
+          const u = e.user_id ? users.findById(e.user_id) : null
+          return {
+            id: e.id,
+            ts: e.ts,
+            type: e.type,
+            message: e.message,
+            stack: e.stack,
+            context: e.context ? JSON.parse(e.context) : null,
+            userId: e.user_id,
+            userName: u?.name ?? null,
+            audioFile: e.audio_file,
+            canReplay: Boolean(e.audio_file),
+            resolved: Boolean(e.resolved),
+          }
+        })
+        return Response.json(out)
+      }
+
+      // ---- /admin/errors/:id/replay ---- (re-run transcription on saved blob)
+      const replayMatch = pathname.match(/^\/admin\/errors\/([^/]+)\/replay$/)
+      if (replayMatch) {
+        if (!adminTokenOk(req)) return new Response('Unauthorized', { status: 401 })
+        if (method !== 'POST') return new Response('Method Not Allowed', { status: 405 })
+        const errId = replayMatch[1]!
+        const row = errors.get(errId)
+        if (!row) return Response.json({ error: 'not found' }, { status: 404 })
+        if (!row.audio_file) {
+          return Response.json({ error: 'no audio retained for this error' }, { status: 400 })
+        }
+        let bytes: Uint8Array
+        try {
+          bytes = failedAudio.read(row.audio_file)
+        } catch (e) {
+          return Response.json(
+            { error: `audio missing on disk: ${(e as Error).message}` },
+            { status: 410 },
+          )
+        }
+        const filename = row.audio_file.split('/').pop() || 'clip.bin'
+        try {
+          const result = await transcribe(bytes, filename)
+          errors.markResolved(errId)
+          return Response.json({
+            ok: true,
+            text: result.text,
+            usage: result.usage ?? null,
+          })
+        } catch (e) {
+          return Response.json(
+            { ok: false, error: (e as Error).message },
+            { status: 502 },
+          )
+        }
+      }
+
       // ---- /me ----
       if (pathname === '/me') {
         if (method !== 'GET') return new Response('Method Not Allowed', { status: 405 })
@@ -388,12 +524,42 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
         try {
           result = await transcribe(bytes, filename)
         } catch (e) {
+          const msg = (e as Error).message
           console.error(
             `[upload] transcription failed user=${authed.user.id} file=${filename} ` +
-              `type=${(audio as Blob).type || '?'} bytes=${bytes.length} src=${source}: ${(e as Error).message}`,
+              `type=${(audio as Blob).type || '?'} bytes=${bytes.length} src=${source}: ${msg}`,
           )
+          // Stash the raw audio so /admin/errors/:id/replay can re-run the
+          // transcription later. Pull the extension off the original filename
+          // (clip.webm → webm) so we don't lose mime info that OpenAI needs.
+          const extension = filename.includes('.') ? filename.split('.').pop()! : 'bin'
+          const errId = `e_${randomBytes(12).toString('hex')}`
+          let audioFile: string | null = null
+          try {
+            audioFile = failedAudio.save({
+              userId: authed.user.id,
+              errorId: errId,
+              bytes,
+              extension,
+            })
+          } catch (saveErr) {
+            console.error(`[upload] failed to retain audio: ${(saveErr as Error).message}`)
+          }
+          errors.insert({
+            type: 'transcription_error',
+            message: msg,
+            user_id: authed.user.id,
+            audio_file: audioFile,
+            context: {
+              filename,
+              mime: (audio as Blob).type || null,
+              bytes: bytes.length,
+              source,
+              recordedAt,
+            },
+          })
           return Response.json(
-            { error: `transcription failed: ${(e as Error).message}` },
+            { error: `transcription failed: ${msg}` },
             { status: 502 },
           )
         }

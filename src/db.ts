@@ -94,6 +94,34 @@ const SCHEMA_SQL = `
 
   CREATE INDEX IF NOT EXISTS idx_pending_deliveries_device_seq
     ON pending_deliveries(device_id, seq);
+
+  -- Error log — DIY observability replacing "user emails me when something
+  -- breaks". Captures both client-side reports (POST /api/errors, no auth
+  -- required so pre-login crashes are reachable) and 5xx server responses.
+  -- type is free-form text; common values: js_exception, upload_failed,
+  -- transcription_error, audio_encode_error, network_error, sw_error,
+  -- indexeddb_error, daemon_error, server_5xx. user_id is nullable for
+  -- pre-auth reports. context is a serialised JSON blob (deviceInfo,
+  -- statusCode, audio metadata, ...). audio_file is the path inside the
+  -- DATA_DIR to the saved failing audio blob (when applicable), so the
+  -- /admin replay endpoint can re-run transcribe() on it. resolved flips
+  -- to 1 after a successful replay so the admin list shrinks.
+  CREATE TABLE IF NOT EXISTS errors (
+    id          TEXT PRIMARY KEY,
+    ts          INTEGER NOT NULL,
+    user_id     TEXT,
+    type        TEXT NOT NULL,
+    message     TEXT NOT NULL,
+    stack       TEXT,
+    context     TEXT,
+    audio_file  TEXT,
+    resolved    INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_errors_ts ON errors(ts DESC);
+  CREATE INDEX IF NOT EXISTS idx_errors_user_id ON errors(user_id);
+  CREATE INDEX IF NOT EXISTS idx_errors_resolved ON errors(resolved);
 `
 
 export function openDb(path: string): DB {

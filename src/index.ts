@@ -12,6 +12,7 @@ const server = await startServer({
   googleClientId: config.googleClientId,
   googleClientSecret: config.googleClientSecret,
   publicUrl: config.publicUrl,
+  adminToken: config.adminToken,
 })
 
 console.log(`voice-clip listening on :${server.port}`)
