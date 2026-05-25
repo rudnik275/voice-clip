@@ -1,183 +1,295 @@
-:root {
-  --bg: #07070b;
-  --fg: #f1f1f7;
-  --muted: #8b8b9c;
-  --accent-a: #7383ff;
-  --accent-b: #b15eff;
-  --ok: #34d399;
-  --warn: #fbbf24;
-  --bad: #f87171;
-  --glass-bg: rgba(255, 255, 255, 0.045);
-  --glass-border: rgba(255, 255, 255, 0.1);
-}
+/* Voice Clip desktop — Neo-Brutalism (cream + red + violet).
+   ------------------------------------------------------------
+   Same visual language as the PWA:
+   - cream #FFFDF5 background, thick black borders, hard offset shadows
+   - mechanical press (translate into shadow on :active)
+   - slight intentional rotations on stickers
+   - System "Avenir Next" / "Helvetica Neue" geometric stack — bundling a
+     web font in a CSP-locked desktop app isn't worth the kilobytes for
+     this UI surface. Font weight + letter-spacing carry the brutalism
+     identity here.
+
+   All IDs from app.js are preserved unchanged so the Rust→webview
+   contract keeps working. */
 
 * {
   box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
 }
 
 [hidden] {
   display: none !important;
 }
 
+:root {
+  --bg: #FFFDF5;
+  --fg: #09090B;
+  --muted: #5A5A6E;
+  --white: #FFFFFF;
+  --red: #FF6B6B;
+  --violet: #B5A8FF;
+  --yellow: #FFD93D;
+  --green: #A7E8BD;
+  --orange: #FFB088;
+
+  --press: 100ms linear;
+  --spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+
+html,
 body {
   margin: 0;
-  font-family:
-    'SF Pro Display', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  padding: 0;
+  min-height: 100vh;
   background: var(--bg);
   color: var(--fg);
-  letter-spacing: -0.01em;
+  font-family: 'Avenir Next', 'Helvetica Neue', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
+  letter-spacing: -0.005em;
+  overflow: hidden;
+}
+
+/* Dot-grid texture — fades to centre, same as the PWA. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background-image: radial-gradient(circle at 1px 1px, rgba(9, 9, 11, 0.12) 1.4px, transparent 0);
+  background-size: 18px 18px;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.55;
+  mask-image: radial-gradient(ellipse 90% 90% at 50% 50%, black 30%, transparent 95%);
+  -webkit-mask-image: radial-gradient(ellipse 90% 90% at 50% 50%, black 30%, transparent 95%);
 }
 
 main {
+  position: relative;
+  z-index: 1;
   min-height: 100vh;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 32px 28px;
+  padding: 20px;
 }
 
 section {
   width: 100%;
-  text-align: center;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 14px;
+  text-align: center;
 }
 
-.logo {
-  font-size: 48px;
+/* === Brand sticker (replaces the old emoji logo) === */
+
+.logo-sticker {
+  display: inline-block;
+  padding: 10px 18px 12px;
+  background: var(--yellow);
+  border: 3px solid var(--fg);
+  box-shadow: 4px 4px 0 var(--fg);
+  transform: rotate(-3deg);
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1;
+  color: var(--fg);
+  margin-bottom: 2px;
 }
 
 h1 {
-  font-size: 26px;
+  font-size: 22px;
+  font-weight: 800;
   margin: 0;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
 }
 
 h2 {
-  font-size: 20px;
+  font-size: 17px;
+  font-weight: 800;
   margin: 0;
+  letter-spacing: -0.01em;
 }
 
 .explainer {
-  color: var(--muted);
-  font-size: 14px;
-  line-height: 1.5;
   margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--fg);
   max-width: 320px;
 }
 
+/* === Buttons (mechanical press into the shadow) === */
+
 button {
   font: inherit;
-  border: 1px solid var(--glass-border);
-  border-radius: 12px;
-  padding: 12px 22px;
+  font-weight: 700;
+  letter-spacing: -0.005em;
+  background: var(--white);
+  color: var(--fg);
+  border: 3px solid var(--fg);
+  box-shadow: 5px 5px 0 var(--fg);
+  padding: 11px 22px;
   cursor: pointer;
-  transition: transform 0.18s cubic-bezier(0.34, 1.4, 0.64, 1);
+  transition: transform var(--press), box-shadow var(--press), background 120ms ease;
+}
+
+button:hover {
+  background: #FAF6E5;
 }
 
 button:active {
-  transform: scale(0.97);
-}
-
-button.primary {
-  color: #fff;
-  border: none;
-  background: linear-gradient(135deg, var(--accent-a), var(--accent-b));
-}
-
-button.secondary {
-  color: var(--muted);
-  background: var(--glass-bg);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
-  backdrop-filter: blur(20px) saturate(180%);
+  transform: translate(5px, 5px);
+  box-shadow: 0 0 0 var(--fg);
 }
 
 button:disabled {
-  opacity: 0.6;
+  opacity: 0.55;
   cursor: default;
+  transform: none;
+  box-shadow: 5px 5px 0 var(--fg);
 }
 
-.hint {
-  font-size: 12px;
-  color: var(--muted);
+button.primary {
+  background: var(--red);
+  color: var(--white);
+  font-size: 15px;
+  padding: 13px 26px;
 }
 
-.hint a {
-  color: var(--accent-a);
+button.primary:hover {
+  background: #FF5A5A;
 }
+
+button.secondary {
+  font-size: 13px;
+  padding: 9px 18px;
+  box-shadow: 4px 4px 0 var(--fg);
+}
+
+button.secondary:active {
+  transform: translate(4px, 4px);
+}
+
+/* === Status pill (dot + label) === */
 
 .status-row {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
-  color: var(--muted);
-  text-transform: uppercase;
+  padding: 6px 12px 7px;
+  background: var(--white);
+  border: 2px solid var(--fg);
+  box-shadow: 3px 3px 0 var(--fg);
+  font-size: 11px;
+  font-weight: 700;
   letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg);
 }
 
 .dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
+  width: 10px;
+  height: 10px;
+  border-radius: 0;
+  border: 2px solid var(--fg);
   background: var(--muted);
 }
 
 .dot.connected {
-  background: var(--ok);
-  box-shadow: 0 0 8px var(--ok);
+  background: var(--green);
 }
 
 .dot.connecting,
 .dot.reconnecting {
-  background: var(--warn);
-  animation: pulse 1.2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  background: var(--yellow);
+  animation: blink 1.2s steps(2) infinite;
 }
 
 .dot.offline {
-  background: var(--bad);
+  background: var(--red);
 }
 
-@keyframes pulse {
-  50% {
-    opacity: 0.3;
-  }
+@keyframes blink {
+  50% { opacity: 0.35; }
 }
+
+/* === Clip card === */
 
 .clip-card {
   width: 100%;
   text-align: left;
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
-  -webkit-backdrop-filter: blur(24px) saturate(180%);
-  backdrop-filter: blur(24px) saturate(180%);
-  border-radius: 14px;
-  padding: 14px 16px;
+  background: var(--white);
+  border: 3px solid var(--fg);
+  box-shadow: 6px 6px 0 var(--fg);
+  padding: 12px 14px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .clip-label {
-  font-size: 11px;
+  font-size: 10px;
+  font-weight: 800;
   text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--muted);
+  letter-spacing: 0.10em;
+  color: var(--fg);
+  background: var(--yellow);
+  padding: 3px 8px;
+  border: 2px solid var(--fg);
+  align-self: flex-start;
+  line-height: 1;
 }
 
 .clip-text {
-  margin: 6px 0 0;
-  font-size: 14px;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
   line-height: 1.45;
+  color: var(--fg);
   word-break: break-word;
-  max-height: 120px;
+  max-height: 140px;
   overflow: auto;
 }
 
+/* === Hints, kbd shortcuts === */
+
+.hint {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  margin: 0;
+}
+
+.hint a {
+  color: var(--fg);
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 2px;
+}
+
 kbd {
+  display: inline-block;
   font-family: inherit;
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
-  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  background: var(--white);
+  border: 2px solid var(--fg);
+  box-shadow: 2px 2px 0 var(--fg);
   padding: 1px 6px;
-  font-size: 12px;
+  margin: 0 2px;
+  letter-spacing: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }
