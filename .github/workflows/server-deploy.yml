@@ -77,6 +77,22 @@ jobs:
     permissions:
       contents: read
     steps:
+      - uses: actions/checkout@v6
+
+      # Ship compose + litestream YAMLs first. Before this step, the deploy
+      # job rolled the image but never copied compose/litestream changes —
+      # only redeploy.sh / bootstrap-deploy.sh scp'd them, so a compose-only
+      # merge on master was silently a no-op on the VPS.
+      - name: Sync compose + litestream.yml to VPS
+        uses: appleboy/scp-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "docker-compose.prod.yml,litestream.yml"
+          target: /opt/voice-clip/
+          overwrite: true
+
       - name: Pull + restart voice-clip
         uses: appleboy/ssh-action@v1
         env:
