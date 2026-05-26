@@ -20,6 +20,7 @@ import {
   playStopRec,
   playSuccess,
   setMuted,
+  unlockAudio,
 } from './sounds'
 
 // ---- DIY observability (#55) ----
@@ -78,6 +79,21 @@ function reportError(
     /* don't let the reporter throw */
   }
 }
+
+// iOS Safari ignores viewport `user-scalable=no` outside PWA standalone
+// mode, so the user can accidentally pinch-zoom the UI. Block multi-touch
+// gestures and Safari-specific `gesturestart` outright — there's no
+// legitimate pinch target in this app, recording is one big button.
+document.addEventListener(
+  'touchmove',
+  (e) => {
+    if (e.touches.length > 1) e.preventDefault()
+  },
+  { passive: false },
+)
+document.addEventListener('gesturestart', (e) => e.preventDefault())
+document.addEventListener('gesturechange', (e) => e.preventDefault())
+document.addEventListener('dblclick', (e) => e.preventDefault())
 
 window.addEventListener('error', (event) => {
   reportError('js_exception', event.error ?? event.message, {
@@ -141,10 +157,26 @@ const quotaMeta = $<HTMLElement>('quota-meta')
 function paintQuotaChip(me: Me): void {
   const plan = me.plan ?? 'free'
   const used = me.usage?.clips_this_month ?? 0
-  const limit = me.usage?.free_monthly_limit ?? null
+  // Prefer the new `monthly_limit` field — it's already plan-aware on the
+  // server. Fall back to the legacy `free_monthly_limit` for clients that
+  // haven't picked up the rename yet (only correct for free-tier users).
+  const limit =
+    me.usage?.monthly_limit !== undefined
+      ? me.usage.monthly_limit
+      : plan === 'free'
+        ? (me.usage?.free_monthly_limit ?? null)
+        : null
 
   quotaChip.classList.remove('is-pro', 'is-exhausted')
-  if (plan === 'pro') {
+
+  if (plan === 'unlimited') {
+    quotaChip.classList.add('is-pro')
+    quotaLabel.textContent = 'Unlimited'
+    quotaMeta.textContent = 'No monthly cap'
+    quotaChip.hidden = false
+    return
+  }
+  if (plan === 'pro' && (limit === null || limit === 0)) {
     quotaChip.classList.add('is-pro')
     quotaLabel.textContent = 'Pro plan'
     quotaMeta.textContent = 'Unlimited transcriptions'
@@ -158,8 +190,13 @@ function paintQuotaChip(me: Me): void {
   }
   const ratio = Math.min(1, used / limit)
   quotaBarFill.style.width = `${Math.round(ratio * 100)}%`
-  quotaLabel.textContent = 'Free plan'
-  quotaCta.textContent = used >= limit ? 'Upgrade now' : 'Upgrade'
+  quotaLabel.textContent = plan === 'pro' ? 'Pro plan' : 'Free plan'
+  if (plan === 'pro') {
+    quotaChip.classList.add('is-pro')
+    quotaCta.textContent = used >= limit ? 'Cap reached' : ''
+  } else {
+    quotaCta.textContent = used >= limit ? 'Upgrade now' : 'Upgrade'
+  }
   quotaMeta.textContent = `${used} / ${limit} this month`
   if (used >= limit) quotaChip.classList.add('is-exhausted')
   quotaChip.hidden = false
@@ -220,10 +257,14 @@ type Me = {
   name: string
   picture_url: string | null
   is_owner: boolean
-  plan?: 'free' | 'pro'
+  plan?: 'free' | 'pro' | 'unlimited'
   usage?: {
     clips_this_month: number
-    free_monthly_limit: number | null
+    // null = no cap on this plan (typically 'unlimited').
+    monthly_limit?: number | null
+    // Legacy alias for clients that haven't shipped the rename yet —
+    // tracks the FREE-tier cap specifically.
+    free_monthly_limit?: number | null
   }
 }
 
@@ -563,6 +604,19 @@ let recordMime = 'audio/webm'
 const MIN_RECORD_MS = 350
 const MIN_RECORD_BYTES = 1200
 
+// Silence guard: if the loudest moment of a recording stays below this RMS,
+// nothing audible was captured — sending the blob to gpt-4o-transcribe
+// would just yield a hallucinated sentence. Calibrated against the same RMS
+// scale tickVoice already computes (speech sits around 0.05–0.30, room
+// ambience around 0.005–0.015).
+const SILENCE_RMS_THRESHOLD = 0.03
+
+// Hard ceiling on a single recording — matches the server-side 5MB bytes
+// cap and gives the Pro tier a predictable per-clip cost ceiling. The UI
+// auto-stops at this point so the user doesn't accidentally bank 20 min of
+// audio that the server would then refuse.
+const MAX_RECORD_MS = 5 * 60 * 1000
+
 // Tap-to-toggle (not push-to-hold) + mid-recording pause. Pause is done by
 // disabling the mic track (NOT MediaRecorder.pause()) so the result is one
 // continuous, always-valid blob with a silent gap — robust across
@@ -580,6 +634,7 @@ function elapsedMs(): number {
 
 const VOICE_ALPHA = 0.16 // smoothing — see CLAUDE.md "Voice reactivity"
 let smoothedLevel = 0
+let maxRmsObserved = 0
 
 function tickVoice() {
   if (!analyser) return
@@ -591,6 +646,7 @@ function tickVoice() {
     sumSq += v * v
   }
   const rms = Math.sqrt(sumSq / buf.length)
+  if (rms > maxRmsObserved) maxRmsObserved = rms
   // Map RMS (0..~0.5 typical speech) into 0..1, then exponential-smooth.
   const target = Math.min(1, rms * 3.2)
   smoothedLevel += (target - smoothedLevel) * VOICE_ALPHA
@@ -694,7 +750,6 @@ function startMeters(s: MediaStream) {
 async function startRecording() {
   if (recording) return
   recording = true
-  playStartRec()
   cancelMicRelease() // re-recording within the idle window → keep the stream
   let s: MediaStream
   try {
@@ -707,6 +762,12 @@ async function startRecording() {
   // An ultra-fast tap may have already fired stopRecording during the
   // (first-time only) getUserMedia await — abort cleanly.
   if (!recording) return
+  // Play the start tick AFTER the mic is live. The iOS permission modal
+  // (first run) and any context-suspended state coming back from
+  // background both swallow audio scheduled before this point — placing
+  // playStartRec here makes the first tap always audible.
+  unlockAudio()
+  playStartRec()
 
   chunks = []
   startedAt = Date.now()
@@ -733,6 +794,7 @@ async function startRecording() {
 
   startMeters(s)
   smoothedLevel = 0
+  maxRmsObserved = 0
   rafId = requestAnimationFrame(tickVoice)
 
   recBtn.classList.add('recording')
@@ -742,7 +804,12 @@ async function startRecording() {
   recPauseLabel.textContent = 'Pause'
   recPause.hidden = false
   timeTimer = setInterval(() => {
-    recTime.textContent = fmtElapsed(elapsedMs())
+    const ms = elapsedMs()
+    recTime.textContent = fmtElapsed(ms)
+    if (ms >= MAX_RECORD_MS) {
+      showStatus('Достиг лимита 5 минут — остановил', 'info')
+      void stopRecording()
+    }
   }, 250)
 }
 
@@ -868,6 +935,7 @@ function uploadAndTranscribe(blob: Blob, recordedAt: string): Promise<string> {
 // Sentinel: nothing meaningful was captured — surfaced as a calm hint, not
 // an error, and never sent to the server.
 class TooShort extends Error {}
+class TooQuiet extends Error {}
 
 // Tear down the recording UI (pause control, paused state, meters) and
 // always leave the mic track ENABLED so the next recording isn't silent
@@ -900,6 +968,7 @@ async function stopRecording() {
   }
 
   const recordedAt = new Date(startedAt).toISOString()
+  const peakRms = maxRmsObserved
   const stopped = new Promise<Blob>((resolve) => {
     mediaRecorder!.onstop = () => {
       const mime = mediaRecorder!.mimeType || recordMime
@@ -922,6 +991,11 @@ async function stopRecording() {
   const textPromise = stopped.then((blob) => {
     if (durationMs < MIN_RECORD_MS || blob.size < MIN_RECORD_BYTES) {
       throw new TooShort()
+    }
+    // Whisper/gpt-4o-transcribe hallucinate confident sentences from
+    // silence; gate the upload on a real audible signal having been seen.
+    if (peakRms < SILENCE_RMS_THRESHOLD) {
+      throw new TooQuiet()
     }
     return uploadAndTranscribe(blob, recordedAt)
   })
@@ -956,6 +1030,8 @@ async function stopRecording() {
   } catch (e) {
     if (e instanceof TooShort) {
       showStatus('Слишком коротко — запиши подольше', 'info')
+    } else if (e instanceof TooQuiet) {
+      showStatus('Не услышал тебя — говори громче', 'info')
     } else {
       showStatus((e as Error).message || 'Не удалось распознать', 'error')
     }
@@ -985,10 +1061,40 @@ recBtn.addEventListener('click', () => {
 // turns off and the mic isn't held open indefinitely. Failures are
 // silent: this is a hint, the real error reporting happens inside
 // startRecording.
+//
+// We also unlock the WebAudio context here. iOS keeps it 'suspended'
+// until a user gesture explicitly resumes it; doing it at touchstart
+// (rather than inside playStartRec()) means the start-of-record tick
+// actually makes it out the speaker on the very first tap.
 recBtn.addEventListener('touchstart', () => {
+  unlockAudio()
   if (recording || transcribing) return
   ensureMic().then(() => scheduleMicRelease()).catch(() => {})
 }, { passive: true })
+// Desktop / non-touch: pointerdown is the equivalent first-gesture hook.
+recBtn.addEventListener('pointerdown', () => {
+  unlockAudio()
+}, { passive: true })
+
+// Returning the PWA from background suspends both the AudioContext and the
+// MediaStream tracks on iOS. The next click on the rec button used to feel
+// "frozen" because we were waiting for getUserMedia to come back AND for
+// the audio graph to unlock. Re-arm both as soon as the page is visible
+// again so the first tap is instant.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return
+  unlockAudio()
+  if (recording || transcribing) return
+  // Drop a stream whose tracks went 'ended' while backgrounded — the next
+  // ensureMic() will reacquire cleanly. Don't proactively call ensureMic
+  // here: that triggers the orange iOS mic indicator without user intent.
+  const dead = micStream && micStream.getAudioTracks().every((t) => t.readyState !== 'live')
+  if (dead) {
+    for (const t of micStream!.getTracks()) t.stop()
+    micStream = undefined
+    micSource = undefined
+  }
+})
 
 recPause.addEventListener('click', () => togglePause())
 

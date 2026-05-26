@@ -85,6 +85,13 @@ export interface ServerDeps {
   // Override the free-tier monthly clip cap. Default 30. 0 = disable the
   // gate entirely (useful for tests + early ops).
   freeTierMonthlyLimit?: number
+  // Pro tier monthly clip cap. Default 50 — chosen so that even if every
+  // clip hits the 5-min/5MB ceiling we keep ≥50% margin on a $3 charge
+  // after Stripe fees. 0 = disable (paid users effectively unlimited).
+  proTierMonthlyLimit?: number
+  // Hard byte ceiling on a single /upload. Default 5 MB ≈ 5 min of iPhone
+  // mp4/AAC at ~128 kbps. The 'unlimited' plan bypasses this cap.
+  maxAudioBytes?: number
   liveBus?: LiveBus
   transcribe?: (input: Uint8Array, filename: string) => Promise<TranscriptionResult>
   db?: DB
@@ -178,6 +185,14 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
   const invites = deps.invites ?? createInvitesStore(db, deps.now)
   const plans = deps.plans ?? createPlansStore(db, deps.now)
   const FREE_TIER_LIMIT = deps.freeTierMonthlyLimit ?? 30
+  const PRO_TIER_LIMIT = deps.proTierMonthlyLimit ?? 50
+  const MAX_AUDIO_BYTES = deps.maxAudioBytes ?? 5 * 1024 * 1024
+
+  function limitFor(plan: 'free' | 'pro' | 'unlimited'): number | null {
+    if (plan === 'unlimited') return null
+    if (plan === 'pro') return PRO_TIER_LIMIT > 0 ? PRO_TIER_LIMIT : null
+    return FREE_TIER_LIMIT > 0 ? FREE_TIER_LIMIT : null
+  }
   const liveBus = deps.liveBus ?? createLiveBus()
 
   // Simple per-IP rate limit for /api/errors. The endpoint is unauthed so
@@ -510,6 +525,7 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
         const u = authed.user
         const plan = plans.getPlan(u.id)
         const usage = plans.getUsage(u.id, monthKeyOf((deps.now ?? Date.now)()))
+        const limit = limitFor(plan)
         return Response.json({
           id: u.id,
           email: u.email,
@@ -523,7 +539,13 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
           plan,
           usage: {
             clips_this_month: usage,
-            // null = unlimited; 0 = quota disabled (treated as unlimited UI-side).
+            // null = unlimited (no cap on this plan). The client paints
+            // the quota chip off whichever value is set; we no longer
+            // ship the irrelevant other limit so the UI can't confuse
+            // "5 / 50" for a Pro user with the Free 30 limit.
+            monthly_limit: limit,
+            // Legacy alias — kept until web/ + macos clients are updated
+            // to read monthly_limit. Tracks the FREE limit specifically.
             free_monthly_limit: FREE_TIER_LIMIT > 0 ? FREE_TIER_LIMIT : null,
           },
         })
@@ -549,20 +571,26 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
         const authed = resolveUserFromRequest(req, sessions, users)
         if (!authed) return unauthorized()
 
-        // Quota gate (free tier only). Check BEFORE reading the body so a
-        // capped user doesn't burn bandwidth / blob memory. Pro = unlimited.
+        // Quota gate. Check BEFORE reading the body so a capped user
+        // doesn't burn bandwidth / blob memory. 'unlimited' bypasses
+        // entirely; 'pro' is capped by PRO_TIER_LIMIT, 'free' by
+        // FREE_TIER_LIMIT (either == 0 disables that tier's gate).
         const month = monthKeyOf((deps.now ?? Date.now)())
         const userPlan = plans.getPlan(authed.user.id)
-        if (userPlan === 'free' && FREE_TIER_LIMIT > 0) {
+        const userLimit = limitFor(userPlan)
+        if (userLimit !== null) {
           const used = plans.getUsage(authed.user.id, month)
-          if (used >= FREE_TIER_LIMIT) {
+          if (used >= userLimit) {
             return Response.json(
               {
-                error: 'free tier monthly limit reached',
+                error:
+                  userPlan === 'pro'
+                    ? 'pro tier monthly limit reached'
+                    : 'free tier monthly limit reached',
                 code: 'quota_exceeded',
-                plan: 'free',
+                plan: userPlan,
                 used,
-                limit: FREE_TIER_LIMIT,
+                limit: userLimit,
               },
               { status: 402 },
             )
@@ -589,6 +617,27 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
 
         const bytes = new Uint8Array(await audio.arrayBuffer())
         const filename = (audio as File).name || 'clip.webm'
+
+        // Per-clip duration ceiling — gpt-4o-transcribe charges by audio
+        // tokens, so an unbounded clip blows the Pro $3/mo unit economics
+        // wide open. 5 MB ≈ 5 min of iPhone mp4/AAC. 'unlimited' opts out
+        // (owner-comp tier). The client also auto-stops at the matching
+        // MAX_RECORD_MS so well-behaved phones never hit this.
+        if (
+          userPlan !== 'unlimited' &&
+          MAX_AUDIO_BYTES > 0 &&
+          bytes.length > MAX_AUDIO_BYTES
+        ) {
+          return Response.json(
+            {
+              error: 'clip too long — keep recordings under 5 minutes',
+              code: 'clip_too_long',
+              bytes: bytes.length,
+              limit: MAX_AUDIO_BYTES,
+            },
+            { status: 413 },
+          )
+        }
 
         let result: TranscriptionResult
         try {

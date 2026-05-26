@@ -205,7 +205,143 @@ describe('quota gate (free tier monthly limit)', () => {
     expect(r.status).toBe(200)
     const html = await r.text()
     expect(html).toContain('Get')
-    expect(html).toContain('$5')
+    expect(html).toContain('$3')
+    expect(html).toContain('50 transcriptions')
     expect(html).toContain('Coming soon')
+  })
+})
+
+describe('Pro + Unlimited tiers', () => {
+  let dir: string
+  let server: Awaited<ReturnType<typeof startServer>>
+  let baseUrl: string
+
+  async function start(over: Partial<ServerDeps> = {}) {
+    const deps: ServerDeps = {
+      dataDir: dir,
+      port: 0,
+      useTls: false,
+      allowlist: ['alice@example.com'],
+      googleClientId: CLIENT_ID,
+      googleClientSecret: CLIENT_SECRET,
+      publicUrl: 'http://localhost',
+      googleFetcher: googleFetcher({
+        sub: 'g1',
+        email: 'alice@example.com',
+        name: 'Alice',
+      }),
+      transcribe: async (): Promise<TranscriptionResult> => ({ text: 'stub', usage: undefined }),
+      ...over,
+    }
+    server = await startServer(deps)
+    baseUrl = `http://127.0.0.1:${server.port}`
+  }
+
+  function setPlanInDb(userId: string, plan: 'free' | 'pro' | 'unlimited') {
+    return import('bun:sqlite').then(({ Database }) => {
+      const sqlite = new Database(join(dir, 'voice-clip.sqlite'))
+      sqlite
+        .prepare(
+          `INSERT INTO user_plans (user_id, plan, updated_at) VALUES (?, ?, ?)
+           ON CONFLICT(user_id) DO UPDATE SET plan = excluded.plan`,
+        )
+        .run(userId, plan, Date.now())
+      sqlite.close()
+    })
+  }
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'voice-clip-tiers-'))
+  })
+  afterEach(async () => {
+    server?.stop()
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  test('Pro user is blocked when proTierMonthlyLimit reached', async () => {
+    await start({ freeTierMonthlyLimit: 100, proTierMonthlyLimit: 2 })
+    const s = await signIn(baseUrl)
+    const me = (await fetch(`${baseUrl}/me`, { headers: { cookie: `session=${s}` } }).then((r) =>
+      r.json(),
+    )) as { id: string }
+    await setPlanInDb(me.id, 'pro')
+
+    expect(
+      (await fetch(`${baseUrl}/upload`, { method: 'POST', headers: { cookie: `session=${s}` }, body: audioForm() })).status,
+    ).toBe(200)
+    expect(
+      (await fetch(`${baseUrl}/upload`, { method: 'POST', headers: { cookie: `session=${s}` }, body: audioForm() })).status,
+    ).toBe(200)
+    const blocked = await fetch(`${baseUrl}/upload`, {
+      method: 'POST',
+      headers: { cookie: `session=${s}` },
+      body: audioForm(),
+    })
+    expect(blocked.status).toBe(402)
+    const body = (await blocked.json()) as { code: string; plan: string; limit: number }
+    expect(body.code).toBe('quota_exceeded')
+    expect(body.plan).toBe('pro')
+    expect(body.limit).toBe(2)
+  })
+
+  test('Unlimited user bypasses every cap (clips and bytes)', async () => {
+    // Tight caps everywhere — the only way the upload succeeds is by
+    // bypassing both gates.
+    await start({ freeTierMonthlyLimit: 1, proTierMonthlyLimit: 1, maxAudioBytes: 1 })
+    const s = await signIn(baseUrl)
+    const me = (await fetch(`${baseUrl}/me`, { headers: { cookie: `session=${s}` } }).then((r) =>
+      r.json(),
+    )) as { id: string }
+    await setPlanInDb(me.id, 'unlimited')
+
+    for (let i = 0; i < 3; i++) {
+      const r = await fetch(`${baseUrl}/upload`, {
+        method: 'POST',
+        headers: { cookie: `session=${s}` },
+        body: audioForm(),
+      })
+      expect(r.status).toBe(200)
+    }
+  })
+
+  test('Upload over maxAudioBytes is rejected with 413 for non-unlimited plans', async () => {
+    await start({ maxAudioBytes: 2 })
+    const s = await signIn(baseUrl)
+    const fd = new FormData()
+    fd.set('audio', new Blob([new Uint8Array([1, 2, 3, 4, 5])], { type: 'audio/webm' }), 'clip.webm')
+    fd.set('recordedAt', new Date().toISOString())
+    const r = await fetch(`${baseUrl}/upload`, {
+      method: 'POST',
+      headers: { cookie: `session=${s}` },
+      body: fd,
+    })
+    expect(r.status).toBe(413)
+    const body = (await r.json()) as { code: string; limit: number }
+    expect(body.code).toBe('clip_too_long')
+    expect(body.limit).toBe(2)
+  })
+
+  test('/me reports monthly_limit matching the active plan', async () => {
+    await start({ freeTierMonthlyLimit: 30, proTierMonthlyLimit: 50 })
+    const s = await signIn(baseUrl)
+    let me = (await fetch(`${baseUrl}/me`, { headers: { cookie: `session=${s}` } }).then((r) =>
+      r.json(),
+    )) as { id: string; plan: string; usage: { monthly_limit: number | null } }
+    expect(me.plan).toBe('free')
+    expect(me.usage.monthly_limit).toBe(30)
+
+    await setPlanInDb(me.id, 'pro')
+    me = (await fetch(`${baseUrl}/me`, { headers: { cookie: `session=${s}` } }).then((r) =>
+      r.json(),
+    )) as typeof me
+    expect(me.plan).toBe('pro')
+    expect(me.usage.monthly_limit).toBe(50)
+
+    await setPlanInDb(me.id, 'unlimited')
+    me = (await fetch(`${baseUrl}/me`, { headers: { cookie: `session=${s}` } }).then((r) =>
+      r.json(),
+    )) as typeof me
+    expect(me.plan).toBe('unlimited')
+    expect(me.usage.monthly_limit).toBeNull()
   })
 })

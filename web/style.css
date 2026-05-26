@@ -8,6 +8,12 @@
 * {
   box-sizing: border-box;
   -webkit-tap-highlight-color: transparent;
+  /* `manipulation` disables iOS double-tap-to-zoom on interactive elements
+     while keeping pinch/scroll for the rest of the page. Combined with
+     the viewport meta `user-scalable=no` (only honoured in PWA standalone
+     mode on iOS) and the touchmove guard in app.ts, the UI no longer
+     accidentally zooms when the user taps the record button fast. */
+  touch-action: manipulation;
 }
 
 /* `hidden` HTML attribute must always win over author display rules. */

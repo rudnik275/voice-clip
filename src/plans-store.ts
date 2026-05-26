@@ -6,7 +6,10 @@
 
 import type { DB } from './db'
 
-export type Plan = 'free' | 'pro'
+// 'unlimited' is the owner-comp tier: no monthly cap, no per-clip cap.
+// Set by editing the user_plans row directly until billing is wired up;
+// also used to bypass quotas for the project owner.
+export type Plan = 'free' | 'pro' | 'unlimited'
 
 export interface UserPlanRow {
   user_id: string
@@ -62,8 +65,9 @@ export function createPlansStore(db: DB, now: () => number = Date.now): PlansSto
 
   return {
     getPlan(userId: string): Plan {
-      const row = selectPlan.get(userId)
-      return row?.plan === 'pro' ? 'pro' : 'free'
+      const plan = selectPlan.get(userId)?.plan
+      if (plan === 'pro' || plan === 'unlimited') return plan
+      return 'free'
     },
     setPlan(userId: string, plan: Plan): void {
       upsertPlan.run(userId, plan, now())

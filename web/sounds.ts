@@ -43,6 +43,24 @@ export function setMuted(muted: boolean): void {
   }
 }
 
+// Eagerly create + resume the AudioContext from a user-gesture callback
+// (touchstart on the rec button, etc.) so the FIRST playStartRec() inside
+// the subsequent click handler isn't silent because iOS hadn't unlocked
+// audio yet. Safe to call repeatedly — no-op once the context is running.
+// Also re-resumes a context that iOS suspended while the page was hidden.
+export function unlockAudio(): void {
+  if (typeof window === 'undefined') return
+  if (isMuted()) return
+  if (!_ctx) {
+    const C =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+    if (!C) return
+    _ctx = new C()
+  }
+  if (_ctx.state === 'suspended') void _ctx.resume()
+}
+
 // Short filtered-noise burst — physical "click" component.
 function noise(durationS: number, peak: number, highpass: number): void {
   const c = ctx()
@@ -96,8 +114,46 @@ function tone(
 
 // === Public sounds ===
 
-// Big red button slam — low square wave + noise burst.
+// Single tick — used on Pause button AND on stop-of-recording (same
+// metaphor: a hard "this stops" snap).
+export function playPause(): void {
+  noise(0.005, 0.30, 4000)
+  tone(1500, 'sine', 0.001, 0.005, 0.018, 0.18)
+}
+
+// Double tick at slightly different pitch — used on Resume button AND
+// on start-of-recording (metaphor: "play").
+export function playResume(): void {
+  playPause()
+  setTimeout(() => {
+    noise(0.005, 0.30, 4000)
+    tone(1900, 'sine', 0.001, 0.005, 0.018, 0.18)
+  }, 80)
+}
+
+// Start of recording shares Resume's double tick.
 export function playStartRec(): void {
+  playResume()
+}
+
+// Stop of recording — short tick + brighter sine, distinct from Pause so
+// "stop recording" and "pause during recording" are audibly different.
+export function playStopRec(): void {
+  noise(0.012, 0.45, 2500)
+  tone(550, 'sine', 0.001, 0.008, 0.035, 0.20)
+}
+
+// Mini-bell: root + perfect fifth.
+export function playSuccess(): void {
+  tone(880, 'sine', 0.005, 0.04, 0.20, 0.22, 0)
+  tone(1320, 'sine', 0.005, 0.04, 0.20, 0.18, 0.02)
+  noise(0.008, 0.20, 3500)
+}
+
+// Big red button slam — low square wave + noise burst. Used to be the
+// start-of-record sound; its blunt, "wrong"-sounding character makes it
+// a better error cue, so it's been moved here.
+export function playError(): void {
   const c = ctx()
   if (!c) return
   noise(0.015, 0.6, 2000)
@@ -115,41 +171,6 @@ export function playStartRec(): void {
   g.connect(c.destination)
   osc.start()
   osc.stop(c.currentTime + 0.09)
-}
-
-// Release click — shorter, brighter.
-export function playStopRec(): void {
-  noise(0.012, 0.45, 2500)
-  tone(550, 'sine', 0.001, 0.008, 0.035, 0.20)
-}
-
-// Single tick.
-export function playPause(): void {
-  noise(0.005, 0.30, 4000)
-  tone(1500, 'sine', 0.001, 0.005, 0.018, 0.18)
-}
-
-// Double tick at slightly different pitch.
-export function playResume(): void {
-  playPause()
-  setTimeout(() => {
-    noise(0.005, 0.30, 4000)
-    tone(1900, 'sine', 0.001, 0.005, 0.018, 0.18)
-  }, 80)
-}
-
-// Mini-bell: root + perfect fifth.
-export function playSuccess(): void {
-  tone(880, 'sine', 0.005, 0.04, 0.20, 0.22, 0)
-  tone(1320, 'sine', 0.005, 0.04, 0.20, 0.18, 0.02)
-  noise(0.008, 0.20, 3500)
-}
-
-// Triple low buzzer.
-export function playError(): void {
-  for (let i = 0; i < 3; i++) {
-    tone(220, 'square', 0.003, 0.04, 0.04, 0.18, i * 0.12)
-  }
 }
 
 // Short pop pair — used on successful clipboard copy from history.
