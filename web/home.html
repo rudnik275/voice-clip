@@ -27,6 +27,27 @@
     </script>
   </head>
   <body>
+    <!-- Tauri-only "pair this Mac" splash. Hidden by default; shown by
+         web/tauri-runtime.ts when the desktop app boots without a
+         Keychain device_token. Markup lives in the shared home.html so the
+         PWA and Tauri share one bundle — the PWA never un-hides it. -->
+    <section id="tauri-pair" class="tauri-pair" hidden>
+      <div class="logo-sticker">voice-clip</div>
+      <h1 class="tauri-pair-title">Hook this Mac up</h1>
+      <p class="tauri-pair-explainer">
+        Sign in with Google to pair this Mac. After that, you can record
+        right here — and clips also land in this Mac's clipboard from your
+        phone.
+      </p>
+      <button id="tauri-pair-btn" class="tauri-pair-btn" type="button">
+        Sign in with Google
+      </button>
+      <p class="tauri-pair-hint" id="tauri-pair-hint" hidden>
+        Browser opening — finish sign-in there. This window will refresh
+        automatically when pairing completes.
+      </p>
+    </section>
+
     <div class="topbar">
       <button class="topbar-btn" id="history-btn" type="button" aria-label="History">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"

@@ -20,5 +20,11 @@
        from the tray menu or during pairing / settings. -->
   <key>LSUIElement</key>
   <true/>
+  <!-- Microphone permission prompt. Required because the bundled PWA
+       calls getUserMedia({ audio: true }) inside the webview — macOS
+       gates that behind TCC and refuses the request unless this string
+       is present in the .app's Info.plist. -->
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Voice Clip records your voice and uploads it to the server for transcription.</string>
 </dict>
 </plist>
