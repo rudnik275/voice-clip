@@ -1,6 +1,12 @@
 # ADR 0003 — Monetization scaffold: Free / Pro, DB allowlist, invite links
 
-Status: **Accepted** · 2026-05-25
+Status: **Accepted (partially superseded)** · 2026-05-25
+
+> **Update 2026-05-26**: Decisions #4 and #5 below are superseded by
+> [ADR 0004](0004-pro-tier-pricing.md), which moves Pro from "unlimited
+> for $5" to a metered "$3 / 50 clips / 5-min cap" model and introduces
+> a third `unlimited` tier for owner-comp use. Decisions #1–#3 (allowlist,
+> invites, single-owner model) remain in force.
 
 ## Context
 
