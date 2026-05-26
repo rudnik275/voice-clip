@@ -613,14 +613,20 @@ const MIN_RECORD_BYTES = 1200
 // mic spikes to ~0.10 for one frame):
 //
 //   1. Peak RMS — catches "truly silent" recordings where even the
-//      loudest frame is below ambient + tap thresholds.
-//   2. Voice-active fraction — number of frames whose RMS sat above
-//      VOICE_RMS_THRESHOLD, divided by total frames. A finger-tap
-//      blows past Peak in one frame but leaves the rest of the second
-//      at ambient; demanding ≥15% of frames be "voice" rejects that.
-const SILENCE_RMS_THRESHOLD = 0.04
-const VOICE_RMS_THRESHOLD = 0.06
-const MIN_VOICE_ACTIVE_FRACTION = 0.15
+//      loudest frame is below ambient.
+//   2. Voice-active fraction — frames-above-VOICE_RMS / total-frames.
+//      A finger-tap blows past Peak in one frame but leaves the rest
+//      of the recording at ambient; requiring ≥MIN_VOICE_ACTIVE_FRACTION
+//      of frames be "voice" rejects that pattern.
+//
+// Thresholds dialed back from the initial v23 values (peak 0.04,
+// voice 0.06, fraction 0.15) — short conversational utterances like
+// «раз, раз» were getting flagged false-positive. A finger-tap still
+// produces only 1–2 voice frames in a ~30-frame second, so 8% rejects
+// it cleanly.
+const SILENCE_RMS_THRESHOLD = 0.025
+const VOICE_RMS_THRESHOLD = 0.04
+const MIN_VOICE_ACTIVE_FRACTION = 0.08
 
 // Hard ceiling on a single recording — matches the server-side 5MB bytes
 // cap and gives the Pro tier a predictable per-clip cost ceiling. The UI
@@ -988,10 +994,11 @@ async function stopRecording() {
 
   const recordedAt = new Date(startedAt).toISOString()
   const peakRms = maxRmsObserved
-  // Voice-active fraction snapshot at the moment of stop. Guards against
-  // the "single finger-tap spike + a second of silence" pattern that the
-  // peak-only check waved through.
-  const voiceFraction = totalFrames > 0 ? voiceFrames / totalFrames : 0
+  // Snapshot the voice-activity counters at the moment of stop so they
+  // can't drift if any later code reuses the top-level vars.
+  const snapTotalFrames = totalFrames
+  const snapVoiceFrames = voiceFrames
+  const voiceFraction = snapTotalFrames > 0 ? snapVoiceFrames / snapTotalFrames : 0
   const stopped = new Promise<Blob>((resolve) => {
     mediaRecorder!.onstop = () => {
       const mime = mediaRecorder!.mimeType || recordMime
@@ -1020,6 +1027,17 @@ async function stopRecording() {
     // catches truly silent rooms, voice-active fraction catches the
     // "tap-the-mic + a second of nothing" case where peak alone passes.
     if (peakRms < SILENCE_RMS_THRESHOLD || voiceFraction < MIN_VOICE_ACTIVE_FRACTION) {
+      // Log to the server-side error stream so we can recalibrate the
+      // thresholds from real prod data instead of just guessing. Cheap
+      // enough that doing this on every silence-reject is fine.
+      reportError('audio_encode_error', 'silence-detect rejected', {
+        peakRms: Number(peakRms.toFixed(4)),
+        voiceFraction: Number(voiceFraction.toFixed(4)),
+        totalFrames: snapTotalFrames,
+        voiceFrames: snapVoiceFrames,
+        durationMs,
+        blobBytes: blob.size,
+      })
       throw new TooQuiet()
     }
     return uploadAndTranscribe(blob, recordedAt)
