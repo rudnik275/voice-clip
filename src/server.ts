@@ -98,15 +98,20 @@ export interface ServerDeps {
   now?: () => number
 }
 
-// The GitHub Releases asset the PWA #download-cta points at via
-// /download/latest. `releases/latest/download/<asset>` always resolves to
-// the newest published release's asset of that name.
+// Fallback GitHub Releases URLs for the desktop artifacts. In normal
+// operation the tauri-release CI mirrors all three to the VPS under
+// ${dataDir}/desktop/, and the server below serves them straight off disk
+// — so the desktop updater keeps working when the repo is private and GH
+// Releases require auth. The fallback 302 stays for the brief window after
+// the first deploy of this change, before the next desktop-v* tag.
+//
+// Note: Tauri's updater downloads the .app.tar.gz (verifies its Ed25519
+// signature, extracts in place); the .dmg is only for the first install
+// from the PWA "Download Mac app" button.
 const LATEST_DMG_URL =
   'https://github.com/rudnik275/voice-clip/releases/latest/download/voice-clip.dmg'
-
-// The Tauri updater manifest published by tauri-release CI to each GitHub
-// Release. The Tauri app points at /desktop/update.json on our server which
-// 302s here — so the URL in tauri.conf.json never needs to change.
+const LATEST_APP_TARBALL_URL =
+  'https://github.com/rudnik275/voice-clip/releases/latest/download/voice-clip.app.tar.gz'
 const LATEST_UPDATE_MANIFEST_URL =
   'https://github.com/rudnik275/voice-clip/releases/latest/download/latest.json'
 
@@ -338,6 +343,27 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
     return accessDeniedTpl
       .replace('__EMAIL__', escapeHtml(email))
       .replace('__APP_VERSION__', APP_VERSION)
+  }
+
+  // Serves a desktop-release artifact from ${dataDir}/desktop/<name>. When the
+  // file isn't present yet (fresh deploy before any desktop-v* tag re-runs
+  // the release CI to populate the mirror) we 302 to the legacy GH Releases
+  // URL — keeps the updater alive during the cutover, harmless once the
+  // mirror is populated. cache-control: no-store because the URL is stable
+  // (voice-clip.dmg / latest.json) but its content changes per release.
+  async function serveDesktopArtifact(
+    name: string,
+    contentType: string,
+    fallbackUrl: string,
+  ): Promise<Response> {
+    const file = Bun.file(join(deps.dataDir, 'desktop', name))
+    if (await file.exists()) {
+      return new Response(file, {
+        status: 200,
+        headers: { 'content-type': contentType, 'cache-control': 'no-store' },
+      })
+    }
+    return new Response(null, { status: 302, headers: { location: fallbackUrl } })
   }
 
   const server = Bun.serve({
@@ -1010,21 +1036,44 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
       }
 
       // ---- /download/latest ----
-      // The PWA #download-cta (added in #8) links here. 302 to the GitHub
-      // Releases "latest" alias so the URL never needs updating per release.
+      // PWA "Download Mac app" button. Serves the .dmg straight from the
+      // VPS mirror (so it keeps working with a private repo). Falls back to
+      // GH Releases until the next desktop-v* tag populates the mirror.
       if (pathname === '/download/latest') {
         if (method !== 'GET') return new Response('Method Not Allowed', { status: 405 })
-        return new Response(null, { status: 302, headers: { location: LATEST_DMG_URL } })
+        return serveDesktopArtifact('voice-clip.dmg', 'application/x-apple-diskimage', LATEST_DMG_URL)
+      }
+
+      // ---- /desktop/voice-clip.dmg ----
+      // Stable URL for the .dmg, served off the VPS mirror with the same
+      // disk-then-302 behaviour as /download/latest. Currently only used by
+      // /download/latest itself, but exposed independently so external
+      // links (release notes, support emails, etc.) survive going private.
+      if (pathname === '/desktop/voice-clip.dmg') {
+        if (method !== 'GET') return new Response('Method Not Allowed', { status: 405 })
+        return serveDesktopArtifact('voice-clip.dmg', 'application/x-apple-diskimage', LATEST_DMG_URL)
+      }
+
+      // ---- /desktop/voice-clip.app.tar.gz ----
+      // The URL embedded in latest.json after the CI rewrite. The Tauri
+      // updater downloads this tarball, verifies its Ed25519 signature
+      // against the one in latest.json, and unpacks it over the installed
+      // .app bundle.
+      if (pathname === '/desktop/voice-clip.app.tar.gz') {
+        if (method !== 'GET') return new Response('Method Not Allowed', { status: 405 })
+        return serveDesktopArtifact('voice-clip.app.tar.gz', 'application/gzip', LATEST_APP_TARBALL_URL)
       }
 
       // ---- /desktop/update.json ----
-      // Tauri auto-updater endpoint (unauthenticated). 302s to the signed
-      // latest.json manifest published by tauri-release CI to GitHub Releases.
-      // The Tauri app's tauri.conf.json points at this URL so the endpoint
-      // address is stable across releases; only the GH Releases asset changes.
+      // Tauri auto-updater endpoint (unauthenticated). Serves the signed
+      // manifest from the VPS mirror; the platforms.*.url inside is
+      // rewritten by CI to point at /desktop/voice-clip.dmg on this host so
+      // the updater never touches GitHub Releases when the repo is private.
+      // Falls back to the GH manifest until the first desktop-v* tag after
+      // this change populates the mirror.
       if (pathname === '/desktop/update.json') {
         if (method !== 'GET') return new Response('Method Not Allowed', { status: 405 })
-        return new Response(null, { status: 302, headers: { location: LATEST_UPDATE_MANIFEST_URL } })
+        return serveDesktopArtifact('latest.json', 'application/json; charset=utf-8', LATEST_UPDATE_MANIFEST_URL)
       }
 
       // ---- /desktop/auth/start ----
