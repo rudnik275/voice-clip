@@ -10,6 +10,13 @@ concurrency:
   group: tauri-release
   cancel-in-progress: false
 
+env:
+  # Server origin baked into the desktop binary (option_env! in main.rs) AND
+  # rewritten into latest.json's platforms.*.url so the Tauri updater pulls
+  # from the VPS mirror instead of GitHub Releases (lets us flip the repo
+  # to private without breaking auto-update on installed apps).
+  PUBLIC_URL: https://voice.rudifamily.uk
+
 jobs:
   release:
     name: Build + sign + release macOS DMG
@@ -34,22 +41,86 @@ jobs:
           releaseName: 'Voice Clip ${{ github.ref_name }}'
           includeUpdaterJson: true
         env:
-          # Baked into the binary at compile time (option_env! in main.rs).
-          # Without this the release pointed at localhost:8080 (bug in 0.2.3).
-          PUBLIC_URL: https://voice.rudifamily.uk
+          # PUBLIC_URL inherits from the job-level env block above (used both
+          # by the compiled binary's option_env! and by the latest.json URL
+          # rewrite step below).
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # tauri-action names the DMG with the version (Voice Clip_X.Y.Z_universal.dmg),
-      # so the server's stable /download/latest → releases/latest/download/
-      # voice-clip.dmg can't resolve it. Attach a stable-named copy.
-      - name: Attach stable-named voice-clip.dmg
+      # tauri-action names artifacts with the version (Voice Clip_X.Y.Z_…),
+      # so stable /releases/latest/download/<asset> aliases can't resolve.
+      # Attach stable-named copies of both the .dmg (PWA first-install
+      # download) and the .app.tar.gz (Tauri updater payload).
+      - name: Attach stable-named artifacts
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           dmg=$(ls desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg | head -1)
-          echo "Found DMG: $dmg"
+          tarball=$(ls desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz | head -1)
+          echo "Found DMG:     $dmg"
+          echo "Found tarball: $tarball"
           cp "$dmg" voice-clip.dmg
-          gh release upload "${{ github.ref_name }}" voice-clip.dmg --clobber --repo "${{ github.repository }}"
+          cp "$tarball" voice-clip.app.tar.gz
+          gh release upload "${{ github.ref_name }}" \
+            voice-clip.dmg voice-clip.app.tar.gz \
+            --clobber --repo "${{ github.repository }}"
+
+      # Rewrite latest.json so the URLs inside it point at the VPS mirror
+      # instead of GitHub Releases. The Ed25519 signature in the manifest is
+      # over the tarball bytes, not the JSON, so URL substitution is safe.
+      # Re-upload the rewritten manifest to GH Releases too — keeps the
+      # server-side fallback (302 to GH) usable during the cutover window.
+      - name: Rewrite latest.json to use VPS URLs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release download "${{ github.ref_name }}" \
+            --pattern latest.json \
+            --output latest.json.orig \
+            --repo "${{ github.repository }}"
+          jq --arg url "${PUBLIC_URL}/desktop/voice-clip.app.tar.gz" \
+            '.platforms |= with_entries(.value.url = $url)' \
+            latest.json.orig > latest.json
+          echo "--- rewritten latest.json ---"
+          cat latest.json
+          gh release upload "${{ github.ref_name }}" latest.json \
+            --clobber --repo "${{ github.repository }}"
+
+      # Mirror to VPS so the disk-served routes in src/server.ts pick up the
+      # new release. Staging dir + atomic rename so an in-flight updater
+      # request never reads a half-uploaded file.
+      - name: Stage mirror dir on VPS
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            mkdir -p /opt/voice-clip/data/desktop/incoming
+
+      - name: Upload artifacts to VPS staging
+        uses: appleboy/scp-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "voice-clip.dmg,voice-clip.app.tar.gz,latest.json"
+          target: /opt/voice-clip/data/desktop/incoming/
+          overwrite: true
+
+      - name: Promote staged artifacts atomically
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            set -euo pipefail
+            cd /opt/voice-clip/data/desktop
+            mv incoming/voice-clip.dmg ./voice-clip.dmg
+            mv incoming/voice-clip.app.tar.gz ./voice-clip.app.tar.gz
+            mv incoming/latest.json ./latest.json
+            ls -la

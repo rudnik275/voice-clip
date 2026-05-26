@@ -1,10 +1,15 @@
 # Desktop auto-updater — one-time owner setup
 
 Voice Clip's macOS app uses Tauri's built-in Ed25519 updater. The CI workflow
-(`.github/workflows/tauri-release.yml`) builds a universal `.dmg`, signs the
-update manifest with your private key, and publishes both to GitHub Releases.
-The server route `GET /desktop/update.json` 302-redirects the Tauri app to the
-signed `latest.json` manifest on each release.
+(`.github/workflows/tauri-release.yml`) builds a universal `.dmg` + `.app.tar.gz`,
+signs the update manifest with your private key, publishes them to GitHub
+Releases, **and mirrors all three artifacts to the VPS** at
+`/opt/voice-clip/data/desktop/`. The server serves `GET /desktop/update.json`,
+`GET /desktop/voice-clip.app.tar.gz`, and `GET /desktop/voice-clip.dmg`
+directly from that directory — so the desktop updater keeps working when the
+repo is private and GitHub Releases would require auth. If a file is missing
+on the VPS (e.g. fresh deploy before the next `desktop-v*` tag), the routes
+fall back to a 302 against GitHub Releases.
 
 ---
 
@@ -55,9 +60,20 @@ git tag desktop-v0.2.0 && git push origin desktop-v0.2.0
 ```
 
 The `tauri-release` workflow fires automatically:
-- Builds a universal `.dmg` (`aarch64` + `x86_64` via `lipo`).
+- Builds a universal `.dmg` + `.app.tar.gz` (`aarch64` + `x86_64` via `lipo`).
 - Signs the `latest.json` updater manifest with your Ed25519 key.
-- Creates a GitHub Release named `Voice Clip desktop-v0.2.0` with both assets.
+- Creates a GitHub Release named `Voice Clip desktop-v0.2.0` with the assets
+  (also attaches stable-named copies `voice-clip.dmg` + `voice-clip.app.tar.gz`).
+- **Rewrites `latest.json`** so `platforms.*.url` points at
+  `https://voice.rudifamily.uk/desktop/voice-clip.app.tar.gz` instead of GitHub
+  (signature stays valid — it's over the tarball bytes, not the JSON).
+- **Mirrors `voice-clip.dmg`, `voice-clip.app.tar.gz`, and the rewritten
+  `latest.json` to the VPS** at `/opt/voice-clip/data/desktop/` (staged into
+  `incoming/` then renamed atomically so an in-flight `/desktop/update.json`
+  request never reads a half-uploaded file).
+
+Required GitHub Actions secrets for the mirror step: `SSH_HOST`, `SSH_USER`,
+`SSH_PRIVATE_KEY` — same secrets used by `server-deploy.yml`. No extra setup.
 
 ---
 
@@ -65,11 +81,20 @@ The `tauri-release` workflow fires automatically:
 
 1. The Tauri app polls (or the user clicks **Check for Updates** in the tray menu).
 2. Tauri fetches `https://voice.rudifamily.uk/desktop/update.json`.
-3. The server 302-redirects to `https://github.com/…/releases/latest/download/latest.json`.
+3. The server reads `latest.json` straight from
+   `/data/desktop/latest.json` (mounted from the VPS host).
 4. Tauri verifies the Ed25519 signature in `latest.json` against the pubkey in
-   `tauri.conf.json`. If the version is newer, it downloads and installs the `.dmg`.
-5. The app relaunches into the new version automatically (native macOS update dialog
+   `tauri.conf.json`. The `platforms.*.url` points at
+   `https://voice.rudifamily.uk/desktop/voice-clip.app.tar.gz`, which the
+   server also serves from disk.
+5. Tauri unpacks the tarball over the installed `.app` bundle. The app
+   relaunches into the new version automatically (native macOS update dialog
    shown because `"dialog": true` in `tauri.conf.json`).
+
+Both the manifest route and the tarball route fall back to a 302 against
+GitHub Releases if the on-disk file is missing — so the updater keeps
+working through the brief cutover window between merging a server change
+and re-cutting the next `desktop-v*` tag that populates the VPS mirror.
 
 ---
 
