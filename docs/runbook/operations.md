@@ -60,31 +60,43 @@ used. Re-opening the same link returns **410 Gone**.
 
 ---
 
-## Promoting a user to Pro (Stripe not wired up yet)
+## Plan promotion (Stripe not wired up yet)
 
-Until billing is automated, flip plan rows directly:
+Three plans live in `user_plans.plan`:
+
+| plan | monthly cap | per-clip cap | when to use |
+|---|---|---|---|
+| `free` | 30 clips | 5 min | default for everyone |
+| `pro`  | 50 clips | 5 min | paying user (manual until Stripe lands) |
+| `unlimited` | none | none | owner-comp / household; never for paid users |
+
+The container image ships without `sqlite3`, so run all DB pokes via
+`docker exec voice-clip bun -e '…'` — the `bun:sqlite` binding is
+always available and matches the running schema.
 
 ```sh
 # Find the user id
-ssh deploy@46.62.229.131 \
-  'sudo -n docker exec voice-clip sqlite3 /data/voice-clip.sqlite \
-     "SELECT id, email, name FROM users"'
+ssh deploy@46.62.229.131 'docker exec voice-clip bun -e "
+  import {Database} from \"bun:sqlite\";
+  const db = new Database(\"/data/voice-clip.sqlite\");
+  console.log(JSON.stringify(db.query(\"SELECT id, email, name FROM users\").all(), null, 2));
+"'
 
-# Flip to Pro
-ssh deploy@46.62.229.131 \
-  "sudo -n docker exec voice-clip sqlite3 /data/voice-clip.sqlite \
-     \"INSERT INTO user_plans (user_id, plan, updated_at) \
-       VALUES ('u_…', 'pro', strftime('%s','now')*1000) \
-       ON CONFLICT(user_id) DO UPDATE SET plan='pro', updated_at=excluded.updated_at\""
+# Promote — set PLAN to one of: pro, unlimited, free
+PLAN=pro UID=u_… ssh deploy@46.62.229.131 "docker exec voice-clip bun -e \"
+  import {Database} from 'bun:sqlite';
+  const db = new Database('/data/voice-clip.sqlite');
+  db.prepare('INSERT INTO user_plans (user_id, plan, updated_at) VALUES (?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET plan = excluded.plan, updated_at = excluded.updated_at').run('$UID', '$PLAN', Date.now());
+  console.log(JSON.stringify(db.query('SELECT plan FROM user_plans WHERE user_id = ?').get('$UID')));
+\""
 ```
 
-The UI chip turns green ("Pro plan · Unlimited transcriptions") on the next
-`/me` refresh.
+The profile chip refreshes on the next `/me` call:
+- `free` → "Free plan · N / 30 this month"
+- `pro`  → "Pro plan · N / 50 this month"
+- `unlimited` → "Unlimited · No monthly cap"
 
-Demote back:
-```sh
-"… plan='free' …"
-```
+Demote back to `free` by re-running with `PLAN=free`.
 
 ---
 
