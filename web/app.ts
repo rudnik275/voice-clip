@@ -604,12 +604,23 @@ let recordMime = 'audio/webm'
 const MIN_RECORD_MS = 350
 const MIN_RECORD_BYTES = 1200
 
-// Silence guard: if the loudest moment of a recording stays below this RMS,
-// nothing audible was captured — sending the blob to gpt-4o-transcribe
-// would just yield a hallucinated sentence. Calibrated against the same RMS
-// scale tickVoice already computes (speech sits around 0.05–0.30, room
-// ambience around 0.005–0.015).
-const SILENCE_RMS_THRESHOLD = 0.03
+// Silence guard. Whisper / gpt-4o-transcribe will confidently invent a
+// sentence from a recording that contains only a tap-click + room
+// ambience, so we filter those out BEFORE paying for the round-trip.
+//
+// Two complementary signals (RMS scale matches tickVoice — speech
+// 0.05–0.30, room ambience 0.005–0.015, a single finger-tap into the
+// mic spikes to ~0.10 for one frame):
+//
+//   1. Peak RMS — catches "truly silent" recordings where even the
+//      loudest frame is below ambient + tap thresholds.
+//   2. Voice-active fraction — number of frames whose RMS sat above
+//      VOICE_RMS_THRESHOLD, divided by total frames. A finger-tap
+//      blows past Peak in one frame but leaves the rest of the second
+//      at ambient; demanding ≥15% of frames be "voice" rejects that.
+const SILENCE_RMS_THRESHOLD = 0.04
+const VOICE_RMS_THRESHOLD = 0.06
+const MIN_VOICE_ACTIVE_FRACTION = 0.15
 
 // Hard ceiling on a single recording — matches the server-side 5MB bytes
 // cap and gives the Pro tier a predictable per-clip cost ceiling. The UI
@@ -635,6 +646,8 @@ function elapsedMs(): number {
 const VOICE_ALPHA = 0.16 // smoothing — see CLAUDE.md "Voice reactivity"
 let smoothedLevel = 0
 let maxRmsObserved = 0
+let totalFrames = 0
+let voiceFrames = 0
 
 function tickVoice() {
   if (!analyser) return
@@ -646,7 +659,11 @@ function tickVoice() {
     sumSq += v * v
   }
   const rms = Math.sqrt(sumSq / buf.length)
-  if (rms > maxRmsObserved) maxRmsObserved = rms
+  if (!paused) {
+    totalFrames++
+    if (rms > maxRmsObserved) maxRmsObserved = rms
+    if (rms > VOICE_RMS_THRESHOLD) voiceFrames++
+  }
   // Map RMS (0..~0.5 typical speech) into 0..1, then exponential-smooth.
   const target = Math.min(1, rms * 3.2)
   smoothedLevel += (target - smoothedLevel) * VOICE_ALPHA
@@ -795,6 +812,8 @@ async function startRecording() {
   startMeters(s)
   smoothedLevel = 0
   maxRmsObserved = 0
+  totalFrames = 0
+  voiceFrames = 0
   rafId = requestAnimationFrame(tickVoice)
 
   recBtn.classList.add('recording')
@@ -969,6 +988,10 @@ async function stopRecording() {
 
   const recordedAt = new Date(startedAt).toISOString()
   const peakRms = maxRmsObserved
+  // Voice-active fraction snapshot at the moment of stop. Guards against
+  // the "single finger-tap spike + a second of silence" pattern that the
+  // peak-only check waved through.
+  const voiceFraction = totalFrames > 0 ? voiceFrames / totalFrames : 0
   const stopped = new Promise<Blob>((resolve) => {
     mediaRecorder!.onstop = () => {
       const mime = mediaRecorder!.mimeType || recordMime
@@ -993,8 +1016,10 @@ async function stopRecording() {
       throw new TooShort()
     }
     // Whisper/gpt-4o-transcribe hallucinate confident sentences from
-    // silence; gate the upload on a real audible signal having been seen.
-    if (peakRms < SILENCE_RMS_THRESHOLD) {
+    // silence; gate the upload on real voice activity. Two signals — peak
+    // catches truly silent rooms, voice-active fraction catches the
+    // "tap-the-mic + a second of nothing" case where peak alone passes.
+    if (peakRms < SILENCE_RMS_THRESHOLD || voiceFraction < MIN_VOICE_ACTIVE_FRACTION) {
       throw new TooQuiet()
     }
     return uploadAndTranscribe(blob, recordedAt)
