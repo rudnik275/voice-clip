@@ -143,11 +143,12 @@ export function playStopRec(): void {
   tone(550, 'sine', 0.001, 0.008, 0.035, 0.20)
 }
 
-// Mini-bell: root + perfect fifth.
+// "Done" pop pair — same 800 → 500 Hz as playCopy. Transcription landing
+// in the clipboard IS a copy event from the user's POV, so the two events
+// share the sound. Picked over the original mini-bell on user feedback
+// (the bell felt too "notification-y" after every clip).
 export function playSuccess(): void {
-  tone(880, 'sine', 0.005, 0.04, 0.20, 0.22, 0)
-  tone(1320, 'sine', 0.005, 0.04, 0.20, 0.18, 0.02)
-  noise(0.008, 0.20, 3500)
+  playCopy()
 }
 
 // Big red button slam — low square wave + noise burst. Used to be the
