@@ -183,3 +183,32 @@ export function resolveDeviceFromRequest(
   if (!token) return null
   return devices.findByToken(token)
 }
+
+// ----- unified auth (Mac browser-PWA + Mac Tauri-app share routes) -----
+//
+// The Tauri app needs to call /me, /upload, /history, /cost the same way the
+// PWA does. The PWA carries a session cookie; the Tauri webview carries the
+// device_token (Keychain-backed). This helper accepts either: cookie wins
+// when present (a paired Mac running both shouldn't double-bill), otherwise
+// we resolve the user via the device row. Session is null in the device path
+// because the Tauri app doesn't own a session — routes that mutate session
+// state (e.g. /logout, /pair/*) must keep using resolveUserFromRequest.
+export interface AuthedUser {
+  user: User
+  session: Session | null
+}
+
+export function resolveUserOrDevice(
+  req: Request,
+  sessions: SessionsStore,
+  users: UsersStore,
+  devices: DevicesStore,
+): AuthedUser | null {
+  const authed = resolveUserFromRequest(req, sessions, users)
+  if (authed) return authed
+  const device = resolveDeviceFromRequest(req, devices)
+  if (!device) return null
+  const user = users.findById(device.user_id)
+  if (!user) return null
+  return { user, session: null }
+}

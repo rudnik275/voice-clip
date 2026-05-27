@@ -9,6 +9,9 @@
 //     across the async transcription round-trip.
 //   - History modal: fetch + render, `since` cursor pagination.
 
+// Importing first so the runtime's fetch-patch installs before anything
+// else in this bundle issues a request. In PWA mode this is a no-op.
+import { IS_TAURI, tauriRedirectToLogin, tauriSignOut } from './tauri-runtime'
 import {
   isMuted,
   playCopy,
@@ -564,6 +567,16 @@ profileClose.addEventListener('click', closeProfile)
 profileBackdrop.addEventListener('click', closeProfile)
 profileLogout.addEventListener('click', async () => {
   if (!confirm('Sign out?')) return
+  if (IS_TAURI) {
+    // Tauri owns sign-out: tear down SSE worker + wipe Keychain. The Rust
+    // `sign_out` command also flips the webview back to the pairing view
+    // via the existing `signed_out` event listener, so we just close the
+    // profile modal here and let the shell take over.
+    closeProfile()
+    clearCachedName()
+    await tauriSignOut()
+    return
+  }
   try {
     await fetch('/logout', { method: 'POST', credentials: 'include' })
   } finally {
@@ -1169,6 +1182,15 @@ async function bootAuth(): Promise<void> {
   }
   if (r.status === 401) {
     clearCachedName()
+    if (IS_TAURI) {
+      // Tauri devices are paired explicitly via the OAuth deep-link flow
+      // (begin_pairing → voiceclip://callback). The webview has no /login
+      // route — the Rust shell will surface the SignedOut view when the
+      // Keychain is wiped. Kick off pairing as a safety-net for the rare
+      // case where /me 401s with a token still present.
+      tauriRedirectToLogin()
+      return
+    }
     // No valid session — full navigation to the login page. We replace
     // (not assign) so the back button doesn't bounce the user back into
     // the unauthenticated shell.

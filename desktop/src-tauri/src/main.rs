@@ -115,6 +115,16 @@ fn is_paired() -> bool {
     keychain::load_token().is_some()
 }
 
+/// The opaque device_token from the macOS Keychain, or None if not paired.
+/// Used by the bundled PWA bundle running inside the webview to authenticate
+/// `/me`, `/upload`, `/history`, `/cost` against the server with the
+/// `X-Device-Token` header (the cookie-based session flow doesn't apply
+/// inside the Tauri webview — there's no Google OAuth round-trip here).
+#[tauri::command]
+fn get_device_token() -> Option<String> {
+    keychain::load_token()
+}
+
 /// App data dir (created on demand); falls back to the temp dir.
 fn diag_dir(app: &tauri::AppHandle) -> std::path::PathBuf {
     let d = app
@@ -612,6 +622,7 @@ fn main() {
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             is_paired,
+            get_device_token,
             begin_pairing,
             sign_out,
             enable_autostart,

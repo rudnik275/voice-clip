@@ -45,6 +45,7 @@ import {
   parseInviteCookie,
   parseStateCookie,
   resolveUserFromRequest,
+  resolveUserOrDevice,
   resolveDeviceFromRequest,
   unauthorized,
 } from './auth-middleware'
@@ -546,7 +547,7 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
       // ---- /me ----
       if (pathname === '/me') {
         if (method !== 'GET') return new Response('Method Not Allowed', { status: 405 })
-        const authed = resolveUserFromRequest(req, sessions, users)
+        const authed = resolveUserOrDevice(req, sessions, users, devices)
         if (!authed) return unauthorized()
         const u = authed.user
         const plan = plans.getPlan(u.id)
@@ -594,7 +595,7 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
       // ---- /upload ----
       if (pathname === '/upload') {
         if (method !== 'POST') return new Response('Method Not Allowed', { status: 405 })
-        const authed = resolveUserFromRequest(req, sessions, users)
+        const authed = resolveUserOrDevice(req, sessions, users, devices)
         if (!authed) return unauthorized()
 
         // Quota gate. Check BEFORE reading the body so a capped user
@@ -754,7 +755,7 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
 
       // ---- /history ----
       if (pathname === '/history') {
-        const authed = resolveUserFromRequest(req, sessions, users)
+        const authed = resolveUserOrDevice(req, sessions, users, devices)
         if (!authed) return unauthorized()
 
         if (method === 'GET') {
@@ -778,7 +779,7 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
       // ---- /cost ----
       if (pathname === '/cost') {
         if (method !== 'GET') return new Response('Method Not Allowed', { status: 405 })
-        const authed = resolveUserFromRequest(req, sessions, users)
+        const authed = resolveUserOrDevice(req, sessions, users, devices)
         if (!authed) return unauthorized()
         return Response.json({
           user: costs.userTotal(authed.user.id),
