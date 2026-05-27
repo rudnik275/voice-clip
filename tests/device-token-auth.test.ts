@@ -187,12 +187,16 @@ describe('CORS for Tauri-webview cross-origin requests', () => {
     expect(r.headers.get('access-control-allow-origin')).toBe('tauri://localhost')
     expect(r.headers.get('access-control-allow-methods')).toContain('GET')
     expect(r.headers.get('access-control-allow-headers')).toContain('X-Device-Token')
+    // PWA fetches pass credentials:'include' which the Tauri webview honours.
+    // Without Allow-Credentials the browser blocks the request before it leaves.
+    expect(r.headers.get('access-control-allow-credentials')).toBe('true')
   })
 
-  test('Tauri-origin GET response carries Allow-Origin (so the browser delivers it to JS)', async () => {
+  test('Tauri-origin GET response carries Allow-Origin + Allow-Credentials', async () => {
     const r = await fetch(`${baseUrl}/version`, { headers: { Origin: 'tauri://localhost' } })
     expect(r.status).toBe(200)
     expect(r.headers.get('access-control-allow-origin')).toBe('tauri://localhost')
+    expect(r.headers.get('access-control-allow-credentials')).toBe('true')
     expect(r.headers.get('vary')?.toLowerCase()).toContain('origin')
   })
 
