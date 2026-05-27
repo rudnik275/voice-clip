@@ -381,6 +381,55 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
       const pathname = url.pathname
       const method = req.method
 
+      // ---- CORS (Tauri webview cross-origin) ----
+      // The Tauri macOS app runs its bundled PWA at `tauri://localhost`,
+      // so every fetch to this server is cross-origin. Requests carrying
+      // `X-Device-Token` trip CORS preflight; without an opt-in here the
+      // browser-side fetch fails before the request is sent.
+      //
+      // Allow only Tauri schemes (no `Allow-Credentials` since Tauri
+      // doesn't send cookies anyway — the device_token header is the
+      // entire auth). The PWA running same-origin doesn't preflight, so
+      // its requests skip this block entirely.
+      const origin = req.headers.get('origin')
+      const isTauriOrigin =
+        origin !== null &&
+        (origin === 'tauri://localhost' ||
+          origin === 'http://tauri.localhost' ||
+          origin.startsWith('tauri://'))
+
+      if (method === 'OPTIONS' && isTauriOrigin) {
+        return new Response(null, {
+          status: 204,
+          headers: {
+            'Access-Control-Allow-Origin': origin!,
+            'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+            'Access-Control-Allow-Headers':
+              req.headers.get('access-control-request-headers') ??
+              'Content-Type, X-Device-Token, X-Admin-Token',
+            'Access-Control-Max-Age': '600',
+            Vary: 'Origin',
+          },
+        })
+      }
+
+      // Wrap the rest of the handler so we can stamp the Allow-Origin
+      // header onto every response when the request came from Tauri.
+      const baseResponse = await handleRouted(req, url, pathname, method)
+      if (isTauriOrigin) {
+        baseResponse.headers.set('Access-Control-Allow-Origin', origin!)
+        baseResponse.headers.append('Vary', 'Origin')
+      }
+      return baseResponse
+    },
+  })
+
+  async function handleRouted(
+    req: Request,
+    url: URL,
+    pathname: string,
+    method: string,
+  ): Promise<Response> {
       // ---- static / version ----
       if (method === 'GET' && pathname === '/version') {
         return new Response(APP_VERSION, {
@@ -839,7 +888,7 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
       // device_name the Tauri app reported at pairing (may be null).
       if (pathname === '/devices') {
         if (method !== 'GET') return new Response('Method Not Allowed', { status: 405 })
-        const authed = resolveUserFromRequest(req, sessions, users)
+        const authed = resolveUserOrDevice(req, sessions, users, devices)
         if (!authed) return unauthorized()
         return Response.json(
           devices.list(authed.user.id).map((d) => ({
@@ -1260,8 +1309,7 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
       }
 
       return new Response('Not Found', { status: 404 })
-    },
-  })
+  }
 
   return {
     port: server.port ?? deps.port ?? 0,

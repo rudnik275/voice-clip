@@ -144,4 +144,64 @@ describe('device-token auth on PWA routes', () => {
     const r = await fetch(`${baseUrl}/me?device_token=${deviceToken}`)
     expect(r.status).toBe(200)
   })
+
+  test('/devices lists the calling user\'s paired Macs via device token', async () => {
+    const r = await fetch(`${baseUrl}/devices`, { headers: { 'X-Device-Token': deviceToken } })
+    expect(r.status).toBe(200)
+    const list = (await r.json()) as Array<{ id: string }>
+    expect(list.length).toBeGreaterThanOrEqual(1)
+  })
+})
+
+describe('CORS for Tauri-webview cross-origin requests', () => {
+  let dir: string
+  let server: Awaited<ReturnType<typeof startServer>>
+  let baseUrl: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'voice-clip-cors-'))
+    const deps: ServerDeps = {
+      dataDir: dir,
+      port: 0,
+      useTls: false,
+    }
+    server = await startServer(deps)
+    baseUrl = `http://localhost:${server.port}`
+  })
+
+  afterEach(async () => {
+    if (server) server.stop()
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  test('OPTIONS preflight from tauri://localhost returns 204 + Allow-* headers', async () => {
+    const r = await fetch(`${baseUrl}/me`, {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'tauri://localhost',
+        'Access-Control-Request-Method': 'GET',
+        'Access-Control-Request-Headers': 'X-Device-Token',
+      },
+    })
+    expect(r.status).toBe(204)
+    expect(r.headers.get('access-control-allow-origin')).toBe('tauri://localhost')
+    expect(r.headers.get('access-control-allow-methods')).toContain('GET')
+    expect(r.headers.get('access-control-allow-headers')).toContain('X-Device-Token')
+  })
+
+  test('Tauri-origin GET response carries Allow-Origin (so the browser delivers it to JS)', async () => {
+    const r = await fetch(`${baseUrl}/version`, { headers: { Origin: 'tauri://localhost' } })
+    expect(r.status).toBe(200)
+    expect(r.headers.get('access-control-allow-origin')).toBe('tauri://localhost')
+    expect(r.headers.get('vary')?.toLowerCase()).toContain('origin')
+  })
+
+  test('Non-Tauri Origin (the PWA itself) does NOT get the CORS header', async () => {
+    // PWA's same-origin requests don't carry Origin from the same host
+    // we serve from, but cross-origin curl-style probing should be
+    // refused unless from a Tauri scheme.
+    const r = await fetch(`${baseUrl}/version`, { headers: { Origin: 'https://evil.example.com' } })
+    expect(r.status).toBe(200)
+    expect(r.headers.get('access-control-allow-origin')).toBeNull()
+  })
 })
