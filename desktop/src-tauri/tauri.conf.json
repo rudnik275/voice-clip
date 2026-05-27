@@ -5,8 +5,8 @@
   "identifier": "com.voiceclip.desktop",
   "build": {
     "frontendDist": "./dist",
-    "beforeBuildCommand": "bun ../scripts/build-frontend.ts",
-    "beforeDevCommand": "bun ../scripts/build-frontend.ts"
+    "beforeBuildCommand": "bun scripts/build-frontend.ts 2>/dev/null || bun ../scripts/build-frontend.ts",
+    "beforeDevCommand": "bun scripts/build-frontend.ts 2>/dev/null || bun ../scripts/build-frontend.ts"
   },
   "app": {
     "withGlobalTauri": true,
