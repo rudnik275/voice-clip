@@ -377,36 +377,27 @@ function renderClip(clip: HistoryClip): HTMLElement {
   copyBtn.type = 'button'
   copyBtn.textContent = 'Copy'
   copyBtn.addEventListener('click', async () => {
-    // A plain navigator.clipboard.writeText() only reaches THIS device's
-    // clipboard (the tablet/phone doing the tapping) — it never gets to the
-    // Mac. The Mac receives clips over the daemon SSE stream, so re-sending
-    // a history clip means asking the server to fan it out, exactly like a
-    // fresh /upload does. We still write the local clipboard best-effort so
-    // copying on the same device keeps working.
+    // PRIMARY action: write the text to THIS device's clipboard. The user
+    // tapped "Copy" — they want to paste, here, on whatever they're holding.
+    // The fan-out to paired Macs (via /clip/copy below) is a bonus side
+    // effect, not the headline. Previous copy ("Sent to your Mac") implied
+    // the text only went to the Mac, which surprised users on iPhone who
+    // just wanted to paste locally.
     void navigator.clipboard?.writeText(clip.text).catch(() => {})
     copyBtn.disabled = true
     try {
-      const r = await fetch('/clip/copy', {
+      // Best-effort SSE fan-out so any paired Mac also pbcopies. Failure
+      // here is not a "Copy failed" — the local clipboard write already
+      // succeeded. We surface errors only when the local write itself
+      // could not happen (no clipboard API at all — rare).
+      void fetch('/clip/copy', {
         method: 'POST',
         credentials: 'include',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ seq: clip.seq }),
-      })
-      if (!r.ok) {
-        playError()
-        showStatus('Copy failed', 'error')
-        return
-      }
-      const body = (await r.json()) as { ok: boolean; devices: number }
+      }).catch(() => {})
       playCopy()
-      if (body.devices > 0) {
-        showStatus(body.devices === 1 ? 'Sent to your Mac' : 'Sent to your Macs', 'success')
-      } else {
-        // No paired Mac — the text is on this device's clipboard only.
-        showStatus('Copied — pair a Mac to paste there', 'info')
-      }
-    } catch {
-      showStatus('Copy failed', 'error')
+      showStatus('Copied', 'success')
     } finally {
       copyBtn.disabled = false
     }
@@ -764,9 +755,20 @@ function extForMime(mime: string): string {
 
 // Acquire the mic ONCE; reuse the live stream for every subsequent press
 // (instant start, no per-press getUserMedia latency).
+//
+// Track liveness check: `readyState === 'live'` AND `muted === false`. iOS
+// sets `muted = true` (without ending the track) when another app takes
+// the mic mid-session — e.g. an incoming phone call. The old check passed
+// these stale tracks through, so the next recording captured silence and
+// the user got "Не услышал тебя — говори громче" on a 30-second dictation.
 async function ensureMic(): Promise<MediaStream> {
-  const live = micStream?.getAudioTracks().some((t) => t.readyState === 'live')
-  if (micStream && live) return micStream
+  const usable = micStream
+    ?.getAudioTracks()
+    .some((t) => t.readyState === 'live' && !t.muted)
+  if (micStream && usable) return micStream
+  // Reacquiring — first stop any stale tracks so iOS releases the indicator
+  // before the new stream lights it up again.
+  if (micStream) for (const t of micStream.getTracks()) t.stop()
   micStream = await navigator.mediaDevices.getUserMedia({ audio: true })
   micSource = undefined // a new stream invalidates the old source node
   return micStream
@@ -1164,13 +1166,24 @@ recBtn.addEventListener('pointerdown', () => {
   unlockAudio()
 }, { passive: true })
 
-// Returning the PWA from background suspends both the AudioContext and the
-// MediaStream tracks on iOS. The next click on the rec button used to feel
-// "frozen" because we were waiting for getUserMedia to come back AND for
-// the audio graph to unlock. Re-arm both as soon as the page is visible
-// again so the first tap is instant.
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState !== 'visible') return
+  // Page went to background — proactively release the warm mic stream so
+  // iOS doesn't play its system "microphone in use changed" notification
+  // when the foreground/background switch hands off the indicator. Only
+  // safe to do when idle; an active recording must keep its stream so
+  // the MediaRecorder can finalize the blob.
+  if (document.visibilityState === 'hidden') {
+    if (!recording && !transcribing) {
+      cancelMicRelease()
+      releaseMic()
+    }
+    return
+  }
+  // Page came back. Returning the PWA from background suspends both the
+  // AudioContext and the MediaStream tracks on iOS. The next click on
+  // the rec button used to feel "frozen" because we were waiting for
+  // getUserMedia to come back AND for the audio graph to unlock. Re-arm
+  // both as soon as the page is visible again so the first tap is instant.
   unlockAudio()
   if (recording || transcribing) return
   // Drop a stream whose tracks went 'ended' while backgrounded — the next
