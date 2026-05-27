@@ -90,16 +90,6 @@
         </svg>
         <span id="rec-pause-label">Pause</span>
       </button>
-      <a class="download-cta" id="download-cta" href="/download/latest" hidden>
-        <span class="download-cta-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-            <rect x="2" y="3" width="20" height="14" rx="2" />
-            <path d="M8 21h8M12 17v4" />
-          </svg>
-        </span>
-        <span class="download-cta-title">Download Voice Clip for macOS</span>
-        <span class="download-cta-sub">Recording happens on your phone — the Mac app pastes clips here.</span>
-      </a>
     </main>
 
     <p id="status" role="status" aria-live="polite"></p>
@@ -147,6 +137,26 @@
           </button>
           <h3 class="profile-section-title">Paired devices</h3>
           <div class="profile-devices" id="profile-devices"></div>
+
+          <!-- Download Mac app CTA (ADR 0005). Hidden by default; un-hidden by
+               app.ts based on platform + paired-device count:
+                 - iPhone / iPad / Linux / Windows → stays hidden
+                 - Tauri webview → stays hidden
+                 - Mac browser, 0 paired → .download-cta-card (main, with blurb)
+                 - Mac browser, ≥1 paired → .download-cta-compact (one-liner) -->
+          <a id="download-cta-card" class="download-cta-card" href="/download/latest" hidden>
+            <span class="download-cta-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="2" y="3" width="20" height="14" rx="2" />
+                <path d="M8 21h8M12 17v4" />
+              </svg>
+            </span>
+            <span class="download-cta-title">Download Voice Clip for macOS</span>
+            <span class="download-cta-sub">Receive clips from any device even when your browser is closed.</span>
+          </a>
+          <a id="download-cta-compact" class="download-cta-compact" href="/download/latest" hidden>
+            Install on another Mac →
+          </a>
 
           <!-- Owner-only invite generator. JS un-hides + wires the click
                only when /me reports is_owner=true. The generated link is

@@ -137,7 +137,12 @@ const historyModal = $<HTMLElement>('history-modal')
 const historyList = $<HTMLElement>('history-list')
 const historyClose = $<HTMLButtonElement>('history-close')
 const historyBackdrop = $<HTMLElement>('history-backdrop')
-const downloadCta = $<HTMLAnchorElement>('download-cta')
+// Download Mac app CTAs live in the Profile modal (ADR 0005). Two
+// surfaces: the main card (with blurb) when the user has 0 paired Macs,
+// the compact one-liner when they have ≥1. Both stay hidden unless the
+// user is on a Mac browser AND not running inside the Tauri webview.
+const downloadCtaCard = $<HTMLAnchorElement>('download-cta-card')
+const downloadCtaCompact = $<HTMLAnchorElement>('download-cta-compact')
 const userPill = $<HTMLElement>('user-pill')
 const profileModal = $<HTMLElement>('profile-modal')
 const profileBackdrop = $<HTMLElement>('profile-backdrop')
@@ -295,9 +300,18 @@ function clearCachedName(): void {
   }
 }
 
-// Detect desktop (no coarse pointer = no touch screen) once at load.
-// Live re-detection on resize is NOT required — spec says load-time only.
-const isDesktop = !window.matchMedia('(pointer: coarse)').matches
+// Is the current client a Mac running outside the Tauri shell? Drives the
+// "Download Mac app" CTAs in the Profile modal (ADR 0005). iPads on iOS 13+
+// pretend to be Mac via navigator.platform; we filter them out via the
+// userAgent + maxTouchPoints (Macs have 0 or 1, iPads report 5).
+function isMacBrowser(): boolean {
+  if (IS_TAURI) return false
+  const ua = navigator.userAgent
+  if (/iPad|iPhone|iPod/i.test(ua)) return false
+  if (navigator.maxTouchPoints > 1) return false
+  return /Mac/i.test(navigator.platform || ua)
+}
+const SHOW_MAC_CTA = isMacBrowser()
 
 let statusTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -533,22 +547,40 @@ function renderDevicesEmpty() {
   profileDevices.append(empty)
 }
 
+function updateDownloadCta(deviceCount: number | null): void {
+  // `null` means we don't know the device count yet (load failed, request
+  // pending). Hide both rather than guess — showing a CTA based on stale
+  // info is worse than showing nothing.
+  if (!SHOW_MAC_CTA || deviceCount === null) {
+    downloadCtaCard.hidden = true
+    downloadCtaCompact.hidden = true
+    return
+  }
+  downloadCtaCard.hidden = deviceCount !== 0
+  downloadCtaCompact.hidden = deviceCount === 0
+}
+
 async function loadDevices(): Promise<void> {
   profileDevices.innerHTML = ''
   try {
     const r = await fetch('/devices', { credentials: 'include' })
     if (!r.ok) {
       showStatus('Failed to load devices', 'error')
+      // Server didn't answer — hide both CTAs to avoid showing a
+      // misleading "you have 0 Macs" CTA when we actually don't know.
+      updateDownloadCta(null)
       return
     }
     const list = (await r.json()) as DeviceRow[]
     if (list.length === 0) {
       renderDevicesEmpty()
-      return
+    } else {
+      for (const d of list) profileDevices.append(renderDevice(d))
     }
-    for (const d of list) profileDevices.append(renderDevice(d))
+    updateDownloadCta(list.length)
   } catch {
     showStatus('Failed to load devices', 'error')
+    updateDownloadCta(-1)
   }
 }
 
@@ -1156,12 +1188,10 @@ recPause.addEventListener('click', () => togglePause())
 
 // ---- boot ----
 
-// Desktop: hide record button, show macOS download CTA instead.
-// Touch devices (phones/tablets): record button stays visible, CTA stays hidden.
-if (isDesktop) {
-  recBtn.hidden = true
-  downloadCta.hidden = false
-}
+// REC button is shown on every client — mobile, desktop browser, Tauri
+// webview (ADR 0005). The download-CTA in the Profile modal is what
+// nudges Mac browser users toward the .app for passive receiving; see
+// updateDownloadCta() above.
 
 // Paint the user pill from localStorage instantly — for the common
 // returning-user case there is zero perceptible delay between shell
