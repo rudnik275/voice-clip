@@ -403,6 +403,12 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
           status: 204,
           headers: {
             'Access-Control-Allow-Origin': origin!,
+            // PWA fetches pass `credentials: 'include'`, which Tauri's
+            // webview honours — the browser then requires Allow-Credentials
+            // on the preflight even though Tauri's cookie jar is empty for
+            // voice.rudifamily.uk. Without this header the request is
+            // blocked before X-Device-Token ever reaches the server.
+            'Access-Control-Allow-Credentials': 'true',
             'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
             'Access-Control-Allow-Headers':
               req.headers.get('access-control-request-headers') ??
@@ -418,6 +424,7 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
       const baseResponse = await handleRouted(req, url, pathname, method)
       if (isTauriOrigin) {
         baseResponse.headers.set('Access-Control-Allow-Origin', origin!)
+        baseResponse.headers.set('Access-Control-Allow-Credentials', 'true')
         baseResponse.headers.append('Vary', 'Origin')
       }
       return baseResponse
