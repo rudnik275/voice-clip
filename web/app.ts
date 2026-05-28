@@ -664,6 +664,14 @@ const SILENCE_RMS_THRESHOLD = 0.025
 const VOICE_RMS_THRESHOLD = 0.04
 const MIN_VOICE_ACTIVE_FRACTION = 0.08
 
+// A genuinely dead/muted mic track outputs digital silence (every sample
+// == 128 → rms exactly 0). Even a quiet room floor sits at ~0.005–0.015,
+// well above this, so a peak that never crosses DEAD_MIC_RMS after a couple
+// seconds means the capture is dead — surfaced as a LIVE warning so the user
+// isn't dictating into the void. Much lower than SILENCE_RMS_THRESHOLD on
+// purpose: that one rejects quiet recordings, this one detects no-signal.
+const DEAD_MIC_RMS = 0.002
+
 // Hard ceiling on a single recording — matches the server-side 5MB bytes
 // cap and gives the Pro tier a predictable per-clip cost ceiling. The UI
 // auto-stops at this point so the user doesn't accidentally bank 20 min of
@@ -678,6 +686,18 @@ let paused = false
 let pausedAt = 0
 let pausedTotalMs = 0
 let transcribing = false
+// True between a tap and the mic actually going live. While set, taps on the
+// record button are ignored so an impatient second tap during the iOS
+// permission sheet can't fire stopRecording() on a not-yet-armed recorder.
+let acquiringMic = false
+// Set when the app is backgrounded mid-recording: we pause (flush + disable
+// the track) instead of letting the recorder capture silence, then on return
+// either let the user resume (track survived) or finalize what was already
+// dictated (iOS killed the track). See the visibilitychange handler.
+let suspendedWhileRecording = false
+// One-shot guard so the live "mic is silent" warning fires at most once per
+// recording.
+let deadMicWarned = false
 
 // Spoken time so far, excluding any paused stretches.
 function elapsedMs(): number {
@@ -797,6 +817,16 @@ function scheduleMicRelease() {
   micReleaseTimer = setTimeout(releaseMic, MIC_IDLE_RELEASE_MS)
 }
 
+// Drop the mic stream NOW, regardless of the `recording` guard in
+// releaseMic(). Used after we've already finalized a recording that iOS
+// killed in the background — the next press must reacquire a fresh stream.
+function forceReleaseMic() {
+  cancelMicRelease()
+  if (micStream) for (const t of micStream.getTracks()) t.stop()
+  micStream = undefined
+  micSource = undefined
+}
+
 // A FRESH AudioContext per recording, created inside the user gesture and
 // closed on stop. A persistent context gets auto-suspended by iOS between
 // recordings → the analyser returned silence → the voice pulsation died.
@@ -822,13 +852,16 @@ async function startRecording() {
   recording = true
   cancelMicRelease() // re-recording within the idle window → keep the stream
   let s: MediaStream
+  acquiringMic = true
   try {
     s = await ensureMic()
   } catch {
     recording = false
+    acquiringMic = false
     showStatus('Нет доступа к микрофону', 'error')
     return
   }
+  acquiringMic = false
   // An ultra-fast tap may have already fired stopRecording during the
   // (first-time only) getUserMedia await — abort cleanly.
   if (!recording) return
@@ -867,6 +900,7 @@ async function startRecording() {
   maxRmsObserved = 0
   totalFrames = 0
   voiceFrames = 0
+  deadMicWarned = false
   rafId = requestAnimationFrame(tickVoice)
 
   recBtn.classList.add('recording')
@@ -878,6 +912,19 @@ async function startRecording() {
   timeTimer = setInterval(() => {
     const ms = elapsedMs()
     recTime.textContent = fmtElapsed(ms)
+    // Dead-mic detector: after ~2.5s of (non-paused) recording, if the loudest
+    // frame so far never crossed the no-signal floor, the capture is dead —
+    // tell the user NOW so a long dictation isn't lost into the void.
+    if (
+      !deadMicWarned &&
+      !paused &&
+      ms >= 2500 &&
+      totalFrames >= 60 &&
+      maxRmsObserved < DEAD_MIC_RMS
+    ) {
+      deadMicWarned = true
+      showStatus('Микрофон молчит — звука нет. Останови и запиши заново', 'error')
+    }
     if (ms >= MAX_RECORD_MS) {
       showStatus('Достиг лимита 5 минут — остановил', 'info')
       void stopRecording()
@@ -1009,6 +1056,38 @@ function uploadAndTranscribe(blob: Blob, recordedAt: string): Promise<string> {
 class TooShort extends Error {}
 class TooQuiet extends Error {}
 
+// Gate a finished recording on size + the silence heuristics, then upload.
+// Throws TooShort / TooQuiet so callers can show the calm hint instead of an
+// error. Shared by the normal stop path and the background-suspend finalize.
+function gateAndUpload(
+  blob: Blob,
+  durationMs: number,
+  recordedAt: string,
+  peakRms: number,
+  voiceFraction: number,
+  snapTotalFrames: number,
+  snapVoiceFrames: number,
+): Promise<string> {
+  if (durationMs < MIN_RECORD_MS || blob.size < MIN_RECORD_BYTES) {
+    throw new TooShort()
+  }
+  // Whisper/gpt-4o-transcribe hallucinate confident sentences from silence;
+  // gate the upload on real voice activity. Peak catches truly silent rooms,
+  // voice-active fraction catches the "tap-the-mic + a second of nothing".
+  if (peakRms < SILENCE_RMS_THRESHOLD || voiceFraction < MIN_VOICE_ACTIVE_FRACTION) {
+    reportError('audio_encode_error', 'silence-detect rejected', {
+      peakRms: Number(peakRms.toFixed(4)),
+      voiceFraction: Number(voiceFraction.toFixed(4)),
+      totalFrames: snapTotalFrames,
+      voiceFrames: snapVoiceFrames,
+      durationMs,
+      blobBytes: blob.size,
+    })
+    throw new TooQuiet()
+  }
+  return uploadAndTranscribe(blob, recordedAt)
+}
+
 // Tear down the recording UI (pause control, paused state, meters) and
 // always leave the mic track ENABLED so the next recording isn't silent
 // if the user stopped while paused.
@@ -1065,30 +1144,17 @@ async function stopRecording() {
   // the user gesture. Hand it a PENDING ClipboardItem promise NOW so the
   // grant survives the async upload — it resolves to the transcript once the
   // round-trip completes (or rejects harmlessly if nothing was captured).
-  const textPromise = stopped.then((blob) => {
-    if (durationMs < MIN_RECORD_MS || blob.size < MIN_RECORD_BYTES) {
-      throw new TooShort()
-    }
-    // Whisper/gpt-4o-transcribe hallucinate confident sentences from
-    // silence; gate the upload on real voice activity. Two signals — peak
-    // catches truly silent rooms, voice-active fraction catches the
-    // "tap-the-mic + a second of nothing" case where peak alone passes.
-    if (peakRms < SILENCE_RMS_THRESHOLD || voiceFraction < MIN_VOICE_ACTIVE_FRACTION) {
-      // Log to the server-side error stream so we can recalibrate the
-      // thresholds from real prod data instead of just guessing. Cheap
-      // enough that doing this on every silence-reject is fine.
-      reportError('audio_encode_error', 'silence-detect rejected', {
-        peakRms: Number(peakRms.toFixed(4)),
-        voiceFraction: Number(voiceFraction.toFixed(4)),
-        totalFrames: snapTotalFrames,
-        voiceFrames: snapVoiceFrames,
-        durationMs,
-        blobBytes: blob.size,
-      })
-      throw new TooQuiet()
-    }
-    return uploadAndTranscribe(blob, recordedAt)
-  })
+  const textPromise = stopped.then((blob) =>
+    gateAndUpload(
+      blob,
+      durationMs,
+      recordedAt,
+      peakRms,
+      voiceFraction,
+      snapTotalFrames,
+      snapVoiceFrames,
+    ),
+  )
 
   let clipboardWritten = false
   try {
@@ -1133,10 +1199,87 @@ async function stopRecording() {
   }
 }
 
+// Salvage a recording that was paused by backgrounding when the mic did NOT
+// survive (iOS muted/ended the track while we were away). The MediaRecorder
+// is bound to that dead stream, so we can't continue it — instead assemble
+// the blob from the chunks captured BEFORE the switch and run them through
+// the same gate + upload, so what the user dictated isn't lost. Not inside a
+// user gesture, so the local clipboard write is best-effort; the transcript
+// still reaches the server (and the Mac daemon) and the history.
+async function finalizeSuspended() {
+  const durationMs = elapsedMs()
+  const recordedAt = new Date(startedAt).toISOString()
+  const peakRms = maxRmsObserved
+  const snapTotalFrames = totalFrames
+  const snapVoiceFrames = voiceFrames
+  const voiceFraction = snapTotalFrames > 0 ? snapVoiceFrames / snapTotalFrames : 0
+
+  recording = false
+  paused = false
+
+  let blob: Blob
+  try {
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+      const stopped = new Promise<Blob>((resolve) => {
+        mediaRecorder!.onstop = () =>
+          resolve(new Blob(chunks, { type: mediaRecorder!.mimeType || recordMime }))
+      })
+      mediaRecorder.stop()
+      // If the recorder can't fire onstop (frozen by the OS) fall back to the
+      // chunks we already have rather than hanging forever.
+      blob = await Promise.race([
+        stopped,
+        delay(800).then(() => new Blob(chunks, { type: recordMime })),
+      ])
+    } else {
+      blob = new Blob(chunks, { type: recordMime })
+    }
+  } catch {
+    blob = new Blob(chunks, { type: recordMime })
+  }
+
+  endRecordingUi()
+  forceReleaseMic()
+
+  recBtn.classList.add('busy')
+  recLabel.textContent = ''
+  transcribing = true
+  try {
+    const text = await gateAndUpload(
+      blob,
+      durationMs,
+      recordedAt,
+      peakRms,
+      voiceFraction,
+      snapTotalFrames,
+      snapVoiceFrames,
+    )
+    try {
+      await navigator.clipboard.writeText(text)
+    } catch {
+      /* no gesture / clipboard blocked — transcript still in toast + history */
+    }
+    playSuccess()
+  } catch (e) {
+    if (e instanceof TooShort || e instanceof TooQuiet) {
+      showStatus('Запись свёрнута — нечего распознавать', 'info')
+    } else {
+      showStatus((e as Error).message || 'Не удалось распознать', 'error')
+    }
+  } finally {
+    recBtn.classList.remove('busy')
+    recLabel.textContent = 'Tap to record'
+    recTime.textContent = ''
+    transcribing = false
+  }
+}
+
 // Tap to start, tap again to stop (no press-and-hold). Taps are ignored
-// while a transcription is still in flight.
+// while a transcription is still in flight or the mic is still being acquired
+// (so an impatient tap during the iOS permission sheet can't cancel the
+// not-yet-armed recording).
 recBtn.addEventListener('click', () => {
-  if (transcribing) return
+  if (transcribing || acquiringMic) return
   if (recording) void stopRecording()
   else void startRecording()
 })
@@ -1167,12 +1310,25 @@ recBtn.addEventListener('pointerdown', () => {
 }, { passive: true })
 
 document.addEventListener('visibilitychange', () => {
-  // Page went to background — proactively release the warm mic stream so
-  // iOS doesn't play its system "microphone in use changed" notification
-  // when the foreground/background switch hands off the indicator. Only
-  // safe to do when idle; an active recording must keep its stream so
-  // the MediaRecorder can finalize the blob.
   if (document.visibilityState === 'hidden') {
+    // Backgrounded mid-recording: iOS mutes the mic the moment we lose the
+    // foreground, so continuing to "record" just banks silence — and the
+    // user has no idea their dictation is being lost. PAUSE instead: flush
+    // whatever audio is buffered into `chunks`, then disable the track (the
+    // existing pause keeps the recorder armed and the blob valid). On return
+    // we either resume or finalize what was already said — nothing is lost.
+    if (recording && !paused) {
+      try {
+        if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.requestData()
+      } catch {
+        /* requestData unsupported / wrong state — chunks already has the audio */
+      }
+      togglePause()
+      suspendedWhileRecording = true
+      return
+    }
+    // Idle: proactively release the warm mic stream so iOS doesn't play its
+    // "microphone in use changed" notification on the indicator handoff.
     if (!recording && !transcribing) {
       cancelMicRelease()
       releaseMic()
@@ -1180,11 +1336,32 @@ document.addEventListener('visibilitychange', () => {
     return
   }
   // Page came back. Returning the PWA from background suspends both the
-  // AudioContext and the MediaStream tracks on iOS. The next click on
-  // the rec button used to feel "frozen" because we were waiting for
-  // getUserMedia to come back AND for the audio graph to unlock. Re-arm
-  // both as soon as the page is visible again so the first tap is instant.
+  // AudioContext and the MediaStream tracks on iOS. Re-arm the audio graph
+  // immediately so the first tap is instant.
   unlockAudio()
+
+  // We paused an in-progress recording when we left. Decide what to do based
+  // on whether the mic track actually survived the round trip.
+  if (suspendedWhileRecording) {
+    suspendedWhileRecording = false
+    const track = micStream?.getAudioTracks()[0]
+    const alive = !!track && track.readyState === 'live' && !track.muted
+    if (alive) {
+      // The OS kept the stream (short switch / Android). Stay paused and let
+      // the user resume on their own terms — auto-resuming would capture the
+      // fumble of returning to the app. Re-arm the (likely iOS-suspended)
+      // analyser context so the voice meter pulses again on resume.
+      if (audioCtx && audioCtx.state === 'suspended') void audioCtx.resume()
+      showStatus('На паузе — нажми ⏸ чтобы продолжить', 'info')
+    } else {
+      // iOS killed/muted the track. The recorder is bound to that dead
+      // stream and can't continue — finalize what was already dictated.
+      showStatus('Распознаю надиктованное…', 'info')
+      void finalizeSuspended()
+    }
+    return
+  }
+
   if (recording || transcribing) return
   // Drop a stream whose tracks went 'ended' while backgrounded — the next
   // ensureMic() will reacquire cleanly. Don't proactively call ensureMic
