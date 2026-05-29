@@ -46,3 +46,6 @@ certs
 
 # Playwright MCP screenshot/log dump (dev-only)
 .playwright-mcp/
+
+# Claude Code local harness state (worktrees, job scratch, local settings)
+.claude/
