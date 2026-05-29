@@ -797,13 +797,26 @@ function forceReleaseMic() {
   micSource = undefined
 }
 
-// A FRESH AudioContext per recording, created inside the user gesture and
-// closed on stop. A persistent context gets auto-suspended by iOS between
-// recordings → the analyser returned silence → the voice pulsation died.
-// The mic stream is also fresh per recording (see ensureMic); only this
-// lightweight analyser graph is rebuilt here.
+// ONE persistent AudioContext for the lifetime of the page. Creating and
+// closing a context per recording forces an iOS AVAudioSession category
+// switch on every start → audible click/artifact. Instead we create the
+// context once (lazily, inside the first user gesture) and reuse it across
+// recordings. iOS auto-suspends a persistent context between recordings, so
+// we always call resume() at the top of startMeters to re-arm it. The per-
+// recording nodes (MediaStreamAudioSourceNode + AnalyserNode) are still
+// created fresh each time because they are tied to the per-recording mic
+// stream — this keeps the voice meter alive every recording.
 function startMeters(s: MediaStream) {
-  audioCtx = new AudioContext()
+  if (!audioCtx) {
+    audioCtx = new AudioContext()
+    // Hint the iOS audio session toward play-and-record so the category
+    // switch (and its audible artifact) is avoided on subsequent recordings.
+    // Feature-detect: audioSession is iOS 16.4+ only.
+    const nav = navigator as any
+    if (nav.audioSession) nav.audioSession.type = 'play-and-record'
+  }
+  // Always resume — iOS suspends a persistent context when the page is
+  // backgrounded or when the context sits idle between recordings.
   if (audioCtx.state === 'suspended') void audioCtx.resume()
   micSource = audioCtx.createMediaStreamSource(s)
   analyser = audioCtx.createAnalyser()
@@ -938,10 +951,9 @@ function stopMeters() {
   }
   micSource = undefined
   analyser = undefined
-  if (audioCtx) {
-    void audioCtx.close()
-    audioCtx = undefined
-  }
+  // Do NOT close audioCtx here. Closing and recreating it per recording
+  // forces an iOS AVAudioSession category switch → audible click. Leave the
+  // context alive; it will be reused and resumed on the next startMeters().
 }
 
 // The recurring "502 every few recordings" was NOT a tunnel flap — it was
