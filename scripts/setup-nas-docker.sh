@@ -16,7 +16,7 @@
 #     binary, no other commands
 #
 # Run once via the wrapper so NAS_PASSWORD never lands on the local terminal:
-#   ./scripts/with-secrets.sh ./scripts/setup-nas-docker.sh
+#   with-secrets ./scripts/setup-nas-docker.sh
 set -euo pipefail
 
 [ -f .env ] || { echo "ERROR: .env not found." >&2; exit 1; }
@@ -25,7 +25,7 @@ set -a; source .env; set +a
 
 : "${NAS_HOST:?NAS_HOST not set in .env}"
 : "${NAS_USER:?NAS_USER not set in .env}"
-: "${NAS_PASSWORD:?NAS_PASSWORD not set — did you run via with-secrets.sh?}"
+: "${NAS_PASSWORD:?NAS_PASSWORD not set — did you run via with-secrets?}"
 
 KEY="$HOME/.ssh/voice-clip-nas"
 [ -f "$KEY" ] || { echo "ERROR: $KEY missing — run setup-ssh-key.sh first." >&2; exit 2; }

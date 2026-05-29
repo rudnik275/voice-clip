@@ -3,7 +3,7 @@
 # subsequent deploy.sh runs use the key (not the password).
 #
 # Run via the wrapper so NAS_PASSWORD is masked in stdout/stderr:
-#   ./scripts/with-secrets.sh ./scripts/setup-ssh-key.sh
+#   with-secrets ./scripts/setup-ssh-key.sh
 #
 # After this runs once, you can rotate the NAS password in DSM at any time —
 # the ssh-key keeps working.
@@ -15,8 +15,8 @@ set -euo pipefail
 set -a; source .env; set +a
 
 : "${NAS_HOST:?NAS_HOST not set in .env}"
-: "${NAS_USERNAME:?NAS_USERNAME not set — did you run via with-secrets.sh?}"
-: "${NAS_PASSWORD:?NAS_PASSWORD not set — did you run via with-secrets.sh?}"
+: "${NAS_USERNAME:?NAS_USERNAME not set — did you run via with-secrets?}"
+: "${NAS_PASSWORD:?NAS_PASSWORD not set — did you run via with-secrets?}"
 
 KEY="$HOME/.ssh/voice-clip-nas"
 

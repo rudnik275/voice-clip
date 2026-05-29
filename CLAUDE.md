@@ -181,8 +181,7 @@ daemon/
 
 scripts/
   setup-cert.sh             one-time mkcert helper (local dev only)
-  with-secrets.sh           AI-safe `op run` wrapper (copy of slots/scripts/with-secrets.sh)
-  setup-ssh-key.sh          one-time: ssh-keygen + sshpass ssh-copy-id (via with-secrets.sh)
+  setup-ssh-key.sh          one-time: ssh-keygen + sshpass ssh-copy-id (via with-secrets)
   setup-tailscale-funnel.sh ssh into NAS, configure tailscale serve+funnel, print public URL
   deploy.sh                 rsync + scp .env + docker compose up -d on NAS
 
@@ -300,7 +299,7 @@ Typography: **Space Grotesk** (Google Fonts, weights 500/600/700) for everything
 
 That rsyncs sources to the NAS, scp's the local `.env` (gitignored, AI-blocked), and runs `docker compose up -d --build`. Health-checks `/version` at the end.
 
-`scripts/setup-ssh-key.sh` (one-time, via `./scripts/with-secrets.sh`) registers an ssh-key so deploys don't need the NAS password. After that the password can be rotated freely. `scripts/setup-tailscale-funnel.sh` is the other one-time setup that turns on the public Funnel and prints the `*.ts.net` URL — paste that into `.env` as `PUBLIC_URL`.
+`scripts/setup-ssh-key.sh` (one-time, via `with-secrets`) registers an ssh-key so deploys don't need the NAS password. After that the password can be rotated freely. `scripts/setup-tailscale-funnel.sh` is the other one-time setup that turns on the public Funnel and prints the `*.ts.net` URL — paste that into `.env` as `PUBLIC_URL`.
 
 **Local dev (Mac):** `bun run dev` (TLS via mkcert) or `pm2 restart voice-clip` if you keep PM2 running. The Mac-local pbcopy path still works for the dev user, but the multi-user delivery story is the per-user `daemon/` SSE-stream — install on each user's Mac via the curl one-liner in the user-pill menu.
 
@@ -355,11 +354,11 @@ cp .env.example .env
 cat .env.1password
 
 # 3. One-time: register ssh-key on NAS (uses NAS_PASSWORD from 1Password)
-./scripts/with-secrets.sh ./scripts/setup-ssh-key.sh
+with-secrets ./scripts/setup-ssh-key.sh
 
 # 4. One-time: grant NOPASSWD sudo on NAS for /usr/local/bin/docker
 #    AND /var/packages/Tailscale/target/bin/tailscale (uses NAS_PASSWORD once)
-./scripts/with-secrets.sh ./scripts/setup-nas-docker.sh
+with-secrets ./scripts/setup-nas-docker.sh
 
 # 5. Tailscale Funnel: turn it on, get the public URL
 ssh -i ~/.ssh/voice-clip-nas dimka@<NAS_HOST> \
@@ -408,7 +407,7 @@ echo "$PUBLIC_URL/signup/$INVITE"
 - **Synology sshd password fallback after publickey** → SSH_OPTS in deploy.sh include `BatchMode=yes` + `IdentitiesOnly=yes`. Without these rsync hangs on "Permission denied, please try again" even though publickey already succeeded.
 - **rsync "Permission denied" but key works for `ssh exec`** → remote rsync isn't in non-interactive PATH on Synology. Pin it: `--rsync-path=/usr/bin/rsync`.
 - **scp dies with "subsystem request failed on channel 0"** → DSM ships without SFTP subsystem; use legacy `scp -O`.
-- **DSM admin's sudo asks for password every time** → run `./scripts/with-secrets.sh ./scripts/setup-nas-docker.sh` once. Writes a tight `/etc/sudoers.d/<user>-voice-clip-docker` entry whitelisting only the docker + tailscale binaries.
+- **DSM admin's sudo asks for password every time** → run `with-secrets ./scripts/setup-nas-docker.sh` once. Writes a tight `/etc/sudoers.d/<user>-voice-clip-docker` entry whitelisting only the docker + tailscale binaries.
 - **`docker compose up` fails with "Bind mount failed: '...data' does not exist"** → deploy.sh creates `${REMOTE_DIR}/data` ahead of build. Recreate manually with `mkdir -p` if you ever wipe the host volume.
 - **Public URL is NXDOMAIN locally even though Funnel is ON** → local resolver cached the negative response from before Funnel was enabled. Auth NS still has the record (verify with `dig @<one-of-ts.net-NS> <hostname>`). It propagates within a few minutes; meanwhile use `curl --resolve <host>:443:<tailscale-anycast-IP>`.
 - **Funnel command says "Funnel is not enabled on your tailnet"** → click the enable link from the error message (one-off in Tailscale Admin Console), or visit the Admin → device → Funnel toggle.
@@ -467,11 +466,11 @@ ssh -i ~/.ssh/voice-clip-nas dimka@<NAS_HOST> \
 
 **App secrets** (`OPENAI_API_KEY`, `ADMIN_TOKEN`) live in plain `.env` (gitignored, AI-blocked by the global `Read .env*` rule). User fills `.env` by hand from `.env.example`.
 
-**NAS connection** is the only thing that flows through 1Password — `op://Personal/<NAS-uuid>/{username,password}` references in `.env.1password`, resolved at run-time by `./scripts/with-secrets.sh` (a `op run` wrapper that masks values in stdout/stderr). NAS password is used **once** during `setup-ssh-key.sh`; afterwards everything is ssh-key-based.
+**NAS connection** is the only thing that flows through 1Password — `op://Personal/<NAS-uuid>/{username,password}` references in `.env.1password`, resolved at run-time by `with-secrets` (a `op run` wrapper that masks values in stdout/stderr). NAS password is used **once** during `setup-ssh-key.sh`; afterwards everything is ssh-key-based.
 
 **AI rules:**
 - Never `op read`, `op item get`, `op inject`, or any command that prints secret values to stdout.
 - Never `cat .env` / `Read .env`.
-- Always go through `./scripts/with-secrets.sh ./scripts/<X>.sh` for anything that needs `NAS_PASSWORD`.
+- Always go through `with-secrets ./scripts/<X>.sh` for anything that needs `NAS_PASSWORD`.
 - For 1Password items with special chars in the title (parens/spaces), use the item's UUID in the `op://` reference instead of the title — the URI syntax doesn't allow them.
 
