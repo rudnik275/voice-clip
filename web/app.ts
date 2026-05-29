@@ -615,17 +615,12 @@ profileLogout.addEventListener('click', async () => {
 
 let mediaRecorder: MediaRecorder | undefined
 let chunks: Blob[] = []
-// The mic stream is kept alive ACROSS quick successive recordings (instant
-// start, no per-press getUserMedia latency) but released after a short idle
-// once a recording ends — otherwise iOS shows the orange "mic in use"
-// indicator for the whole session. The release happens inside onstop AFTER
-// the blob is assembled (NOT right after mediaRecorder.stop(), which used to
-// race the recorder's final flush → empty 5-byte blob → server 502).
+// Mic stream is acquired FRESH on every record start and released on every
+// stop. This avoids the iOS backgrounding bug: iOS freezes JS timers while
+// backgrounded AND mutes a long-held track, so on return any reused track
+// would capture silence. The blob is assembled inside onstop AFTER
+// mediaRecorder.stop(), so the track is not stopped until then (no flush race).
 let micStream: MediaStream | undefined
-// Idle-release timer: keep the mic ~MIC_IDLE_RELEASE_MS after a stop so
-// back-to-back records reuse the live stream; then drop it (indicator off).
-let micReleaseTimer: ReturnType<typeof setTimeout> | undefined
-const MIC_IDLE_RELEASE_MS = 1200
 let audioCtx: AudioContext | undefined
 let micSource: MediaStreamAudioSourceNode | undefined
 let analyser: AnalyserNode | undefined
@@ -773,55 +768,30 @@ function extForMime(mime: string): string {
   }
 }
 
-// Acquire the mic ONCE; reuse the live stream for every subsequent press
-// (instant start, no per-press getUserMedia latency).
-//
-// Track liveness check: `readyState === 'live'` AND `muted === false`. iOS
-// sets `muted = true` (without ending the track) when another app takes
-// the mic mid-session — e.g. an incoming phone call. The old check passed
-// these stale tracks through, so the next recording captured silence and
-// the user got "Не услышал тебя — говори громче" on a 30-second dictation.
+// Acquire a FRESH stream every time. Never reuse a previously-held track:
+// on iOS, after the app is backgrounded the held track gets muted and JS
+// timers are frozen (so the old idle-release never fired) — reusing it
+// captures silence. A fresh getUserMedia guarantees a live, unmuted track.
 async function ensureMic(): Promise<MediaStream> {
-  const usable = micStream
-    ?.getAudioTracks()
-    .some((t) => t.readyState === 'live' && !t.muted)
-  if (micStream && usable) return micStream
-  // Reacquiring — first stop any stale tracks so iOS releases the indicator
-  // before the new stream lights it up again.
   if (micStream) for (const t of micStream.getTracks()) t.stop()
   micStream = await navigator.mediaDevices.getUserMedia({ audio: true })
-  micSource = undefined // a new stream invalidates the old source node
+  micSource = undefined
   return micStream
 }
 
-function cancelMicRelease() {
-  if (micReleaseTimer) {
-    clearTimeout(micReleaseTimer)
-    micReleaseTimer = undefined
-  }
-}
-
-// Actually stop the mic tracks → iOS drops the "mic in use" indicator.
+// Stop the mic tracks → iOS drops the "mic in use" indicator. Called on every
+// stop so we never hold a track across a backgrounding.
 function releaseMic() {
-  micReleaseTimer = undefined
   if (recording) return // a new recording started in the grace window
   if (micStream) for (const t of micStream.getTracks()) t.stop()
   micStream = undefined
   micSource = undefined
 }
 
-// Safe to call ONLY once the blob is captured (inside onstop). Defers the
-// track stop by a short idle so a quick re-record keeps the stream live.
-function scheduleMicRelease() {
-  cancelMicRelease()
-  micReleaseTimer = setTimeout(releaseMic, MIC_IDLE_RELEASE_MS)
-}
-
 // Drop the mic stream NOW, regardless of the `recording` guard in
 // releaseMic(). Used after we've already finalized a recording that iOS
 // killed in the background — the next press must reacquire a fresh stream.
 function forceReleaseMic() {
-  cancelMicRelease()
   if (micStream) for (const t of micStream.getTracks()) t.stop()
   micStream = undefined
   micSource = undefined
@@ -830,8 +800,8 @@ function forceReleaseMic() {
 // A FRESH AudioContext per recording, created inside the user gesture and
 // closed on stop. A persistent context gets auto-suspended by iOS between
 // recordings → the analyser returned silence → the voice pulsation died.
-// The mic STREAM stays persistent (that is the empty-blob fix); only this
-// lightweight analyser graph is rebuilt.
+// The mic stream is also fresh per recording (see ensureMic); only this
+// lightweight analyser graph is rebuilt here.
 function startMeters(s: MediaStream) {
   audioCtx = new AudioContext()
   if (audioCtx.state === 'suspended') void audioCtx.resume()
@@ -850,7 +820,6 @@ function startMeters(s: MediaStream) {
 async function startRecording() {
   if (recording) return
   recording = true
-  cancelMicRelease() // re-recording within the idle window → keep the stream
   let s: MediaStream
   acquiringMic = true
   try {
@@ -953,9 +922,9 @@ function togglePause() {
   }
 }
 
-// Tear down the per-recording analyser graph (NOT the mic stream — that
-// stays persistent so the next press is instant and never races the
-// recorder's flush). Closing the context releases the iOS audio slot.
+// Tear down the per-recording analyser graph. The mic stream is released
+// separately inside the onstop blob handler (no flush race).
+// Closing the AudioContext releases the iOS audio slot.
 function stopMeters() {
   if (rafId) cancelAnimationFrame(rafId)
   rafId = 0
@@ -1114,7 +1083,7 @@ async function stopRecording() {
     recBtn.classList.remove('busy')
     recLabel.textContent = 'Tap to record'
     showStatus('Слишком коротко — попробуй ещё раз', 'info')
-    scheduleMicRelease() // mic was acquired but unused — let it go
+    releaseMic() // mic was acquired but unused — let it go
     return
   }
 
@@ -1130,7 +1099,7 @@ async function stopRecording() {
       const mime = mediaRecorder!.mimeType || recordMime
       resolve(new Blob(chunks, { type: mime }))
       // Blob fully assembled — now it's safe to drop the mic (no flush race).
-      scheduleMicRelease()
+      releaseMic()
     }
   })
   mediaRecorder.stop()
@@ -1284,16 +1253,11 @@ recBtn.addEventListener('click', () => {
   else void startRecording()
 })
 
-// Pre-warm the mic the moment the finger lands on the record button.
-// `touchstart` fires 50-200ms before `click` on iOS, so the
-// getUserMedia round-trip overlaps the click pipeline. If the click
-// follows, startRecording() calls cancelMicRelease() and uses the
-// warm stream. If the click never comes (user slid off the button),
-// the scheduled release here drops the stream after the same
-// MIC_IDLE_RELEASE_MS window — so the iOS "mic in use" indicator
-// turns off and the mic isn't held open indefinitely. Failures are
-// silent: this is a hint, the real error reporting happens inside
-// startRecording.
+// Pre-warm the mic permission on first gesture so getUserMedia is already
+// in flight when the click fires (~50-200ms later on iOS). We release
+// immediately after priming — startRecording() will re-acquire a fresh
+// stream on the click. Failures are silent: this is a hint, the real
+// error reporting happens inside startRecording.
 //
 // We also unlock the WebAudio context here. iOS keeps it 'suspended'
 // until a user gesture explicitly resumes it; doing it at touchstart
@@ -1302,7 +1266,7 @@ recBtn.addEventListener('click', () => {
 recBtn.addEventListener('touchstart', () => {
   unlockAudio()
   if (recording || transcribing) return
-  ensureMic().then(() => scheduleMicRelease()).catch(() => {})
+  ensureMic().then(() => releaseMic()).catch(() => {})
 }, { passive: true })
 // Desktop / non-touch: pointerdown is the equivalent first-gesture hook.
 recBtn.addEventListener('pointerdown', () => {
@@ -1327,10 +1291,9 @@ document.addEventListener('visibilitychange', () => {
       suspendedWhileRecording = true
       return
     }
-    // Idle: proactively release the warm mic stream so iOS doesn't play its
+    // Idle: proactively release the mic stream so iOS doesn't play its
     // "microphone in use changed" notification on the indicator handoff.
     if (!recording && !transcribing) {
-      cancelMicRelease()
       releaseMic()
     }
     return
