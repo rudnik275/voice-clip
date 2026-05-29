@@ -1,8 +1,12 @@
 # Production compose file for the VPS deploy.
 #
-# Cloudflare Tunnel (running in the shared `infra-net` network) terminates
-# TLS and routes voice.rudifamily.uk → voice-clip:8080. The host port
-# binding is loopback-only as a defence-in-depth.
+# voice-clip owns its OWN Cloudflare Tunnel ("voice-clip", id 3087388c…),
+# served by the `voice-clip-cloudflared` connector below (shared `infra-net`).
+# It terminates TLS and routes voice.rudifamily.uk → voice-clip:8080. The
+# host port binding is loopback-only as a defence-in-depth.
+#
+# (Previously voice.rudifamily.uk squatted on the unrelated `valorant-bot`
+# tunnel's connector; this service de-couples it onto its own tunnel.)
 
 services:
   voice-clip:
@@ -53,6 +57,27 @@ services:
       # `bucket required for s3 replica`.
       LITESTREAM_S3_BUCKET: ${LITESTREAM_S3_BUCKET}
       LITESTREAM_S3_ENDPOINT: ${LITESTREAM_S3_ENDPOINT}
+    depends_on:
+      - voice-clip
+    networks:
+      - infra-net
+
+  # Dedicated Cloudflare Tunnel connector for the `voice-clip` tunnel.
+  # Token-managed (remote ingress config lives in the CF dashboard:
+  # voice.rudifamily.uk → http://voice-clip:8080). On the same infra-net so
+  # it can reach the app by container name. Token comes from .env
+  # (VOICE_CLIP_TUNNEL_TOKEN) and is never baked into the image.
+  #
+  # NOTE: the CI deploy only rolls `voice-clip` (`up -d --no-deps voice-clip`),
+  # so it never restarts this connector. Bring it up manually after a token
+  # change: `docker compose -f docker-compose.prod.yml up -d voice-clip-cloudflared`.
+  voice-clip-cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: voice-clip-cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${VOICE_CLIP_TUNNEL_TOKEN}
     depends_on:
       - voice-clip
     networks:

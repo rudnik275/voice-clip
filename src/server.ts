@@ -370,6 +370,14 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
   const server = Bun.serve({
     port: deps.port ?? 8080,
     development: false,
+    // SSE (/events) holds a long-lived, mostly-idle stream. Bun's default
+    // idleTimeout is 10s, which silently closes the idle connection — the
+    // origin then EOFs the cloudflared tunnel, the desktop client reconnects,
+    // and the cycle repeats every ~13s (10s idle + backoff), spamming
+    // `unexpected EOF` in the tunnel logs. Raise it well past the SSE
+    // heartbeat interval (see /events) so an idle-but-alive stream is never
+    // reaped. 255s is Bun's maximum.
+    idleTimeout: 255,
     tls: useTls
       ? {
           cert: Bun.file(deps.certPath ?? './certs/cert.pem'),
@@ -1221,6 +1229,11 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
         devices.touch(device.id)
 
         const enc = new TextEncoder()
+        // Heartbeat keeps the otherwise-idle SSE connection alive so neither
+        // Bun's idleTimeout nor any proxy in the path (Cloudflare tunnel)
+        // reaps it. Cleared in cancel(), and on the first failed enqueue
+        // (which means the controller was already closed/errored).
+        let heartbeat: ReturnType<typeof setInterval> | null = null
         const stream = new ReadableStream<Uint8Array>({
           start(controller) {
             // Prelude comment so proxies flush headers and the client sees
@@ -1250,8 +1263,22 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
             }
 
             liveBus.subscribe(device.id, controller)
+
+            // SSE comment ping every 25s (well under the 255s idleTimeout).
+            heartbeat = setInterval(() => {
+              try {
+                controller.enqueue(enc.encode(': ping\n\n'))
+              } catch {
+                // Controller already closed/errored (e.g. device revoked) —
+                // stop pinging; cancel() may not fire for an errored stream.
+                if (heartbeat) clearInterval(heartbeat)
+                heartbeat = null
+              }
+            }, 25_000)
           },
           cancel() {
+            if (heartbeat) clearInterval(heartbeat)
+            heartbeat = null
             liveBus.unsubscribe(device.id)
           },
         })
