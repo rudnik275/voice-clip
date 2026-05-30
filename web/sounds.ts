@@ -43,6 +43,25 @@ export function setMuted(muted: boolean): void {
   }
 }
 
+// Assert the iOS AVAudioSession category to play-and-record BEFORE any
+// AudioContext or getUserMedia negotiates the session. Calling this from
+// unlockAudio() (which fires on the first touchstart/pointerdown on the
+// rec button) means the hint lands before EITHER the sounds.ts context or
+// the app.ts meter context is first created, so iOS has no reason to emit
+// a session-route-change click.
+//
+// Must also be called after every background/foreground round-trip:
+// iOS resets the audio session category when the PWA is backgrounded,
+// so re-asserting on visibilitychange and pageshow prevents the click
+// that would otherwise fire at the start of the next recording.
+//
+// Feature-detected (audioSession is iOS 16.4+ only). No-op elsewhere.
+export function primeAudioSession(): void {
+  if (typeof navigator === 'undefined') return
+  const nav = navigator as unknown as { audioSession?: { type: string } }
+  if (nav.audioSession) nav.audioSession.type = 'play-and-record'
+}
+
 // Eagerly create + resume the AudioContext from a user-gesture callback
 // (touchstart on the rec button, etc.) so the FIRST playStartRec() inside
 // the subsequent click handler isn't silent because iOS hadn't unlocked
@@ -50,6 +69,9 @@ export function setMuted(muted: boolean): void {
 // Also re-resumes a context that iOS suspended while the page was hidden.
 export function unlockAudio(): void {
   if (typeof window === 'undefined') return
+  // Re-assert the audio session category first — before creating or resuming
+  // any AudioContext — so iOS won't switch categories and emit a click.
+  primeAudioSession()
   if (isMuted()) return
   if (!_ctx) {
     const C =
