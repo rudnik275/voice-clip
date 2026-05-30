@@ -28,6 +28,7 @@ export interface UpsertInput {
 export interface UsersStore {
   upsertByGoogleSub(input: UpsertInput): User
   findById(id: string): User | null
+  findByEmail(email: string): User | null
 }
 
 function newUserId(): string {
@@ -59,6 +60,9 @@ function rowToUser(row: UserRow): User {
 export function createUsersStore(db: DB, now: () => number = Date.now): UsersStore {
   const selectBySub = db.query<UserRow, [string]>('SELECT * FROM users WHERE google_sub = ?')
   const selectById = db.query<UserRow, [string]>('SELECT * FROM users WHERE id = ?')
+  const selectByEmail = db.query<UserRow, [string]>(
+    'SELECT * FROM users WHERE email = ? LIMIT 1',
+  )
   const insertUser = db.query<
     UserRow,
     [string, string, string, string, string | null, number, number]
@@ -87,6 +91,12 @@ export function createUsersStore(db: DB, now: () => number = Date.now): UsersSto
 
     findById(id: string): User | null {
       const row = selectById.get(id)
+      return row ? rowToUser(row) : null
+    },
+
+    findByEmail(email: string): User | null {
+      if (!email) return null
+      const row = selectByEmail.get(email.trim().toLowerCase())
       return row ? rowToUser(row) : null
     },
   }

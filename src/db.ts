@@ -117,11 +117,14 @@ const SCHEMA_SQL = `
 
   -- Allowed-email allowlist, DB-backed. Seeded from VOICE_CLIP_ALLOWED_EMAILS
   -- on boot; invite-consume adds rows on the fly.
+  -- "plan" carries the intended tier (free/pro/unlimited) to apply when
+  -- the user first logs in via OAuth (user row may not exist at add time).
   CREATE TABLE IF NOT EXISTS allowed_emails (
     email      TEXT PRIMARY KEY,
     added_at   INTEGER NOT NULL,
     added_via  TEXT NOT NULL,
-    invited_by TEXT
+    invited_by TEXT,
+    plan       TEXT
   );
 
   -- One-time invite tokens. Atomic consume guarded by used_at IS NULL.
@@ -210,6 +213,20 @@ export function openDb(path: string): DB {
   if (path !== ':memory:') db.exec('PRAGMA journal_mode = WAL')
   db.exec('PRAGMA foreign_keys = ON')
   db.exec(SCHEMA_SQL)
+<<<<<<< HEAD
   migrateHistoryColumns(db)
+=======
+
+  // Idempotent migration: add the `plan` column to allowed_emails for DBs
+  // created before this column was added to the SCHEMA_SQL above.
+  // CREATE TABLE IF NOT EXISTS won't re-add the column; ALTER TABLE will throw
+  // "duplicate column name" if it already exists — catch and ignore.
+  try {
+    db.exec('ALTER TABLE allowed_emails ADD COLUMN plan TEXT')
+  } catch {
+    // column already present — safe to ignore
+  }
+
+>>>>>>> origin/master
   return db
 }

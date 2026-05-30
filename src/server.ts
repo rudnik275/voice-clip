@@ -190,8 +190,9 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
   }
   // The configured owner email is implicitly always on the allowlist —
   // otherwise the owner could lock themselves out by misconfiguring the
-  // env seed list.
-  if (ownerEmail) allowedEmails.add(ownerEmail, 'env')
+  // env seed list. Always seeds with the 'unlimited' plan so the OAuth
+  // callback applies it on first login (the user row may not exist yet).
+  if (ownerEmail) allowedEmails.add(ownerEmail, 'env', null, 'unlimited')
 
   const invites = deps.invites ?? createInvitesStore(db, deps.now)
   const plans = deps.plans ?? createPlansStore(db, deps.now)
@@ -289,6 +290,7 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
   const loginTplRaw = (await readWebFile('login.html')).replace('__APP_VERSION__', APP_VERSION)
   const accessDeniedTplRaw = await readWebFile('access-denied.html')
   const proHtml = await readWebFile('pro.html')
+  const welcomeHtml = (await readWebFile('welcome.html')).replace('__APP_VERSION__', APP_VERSION)
   const homeTplRaw = await readWebFile('home.html')
   const styleCss = await readWebFile('style.css')
   const manifestRaw = await readWebFile('manifest.webmanifest')
@@ -1094,6 +1096,48 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
         return new Response('Method Not Allowed', { status: 405 })
       }
 
+      // ---- /admin/users ---- (owner OR X-Admin-Token)
+      // Upserts an email into the allowlist with an optional plan tier.
+      // Default plan = 'pro'. Idempotent — re-POST same email updates the plan.
+      // If a user row already exists for that email the plan is also applied
+      // immediately (so returning users get their new tier on next /me without
+      // waiting for a re-login).
+      if (pathname === '/admin/users') {
+        if (!isAdminRequest(req)) return new Response('Unauthorized', { status: 401 })
+        if (method !== 'POST') return new Response('Method Not Allowed', { status: 405 })
+
+        let body: Record<string, unknown>
+        try {
+          body = (await req.json()) as Record<string, unknown>
+        } catch {
+          return Response.json({ error: 'expected JSON body' }, { status: 400 })
+        }
+
+        const rawEmail = typeof body.email === 'string' ? body.email.trim().toLowerCase() : ''
+        if (!rawEmail) {
+          return Response.json({ error: 'email is required' }, { status: 400 })
+        }
+
+        const rawPlan = body.plan
+        const validPlans = ['free', 'pro', 'unlimited'] as const
+        const plan: (typeof validPlans)[number] =
+          validPlans.includes(rawPlan as (typeof validPlans)[number])
+            ? (rawPlan as (typeof validPlans)[number])
+            : 'pro'
+
+        // Upsert into allowlist with the chosen plan.
+        allowedEmails.add(rawEmail, 'manual', null, plan)
+
+        // If a user row already exists for this email, apply the plan now.
+        const existingUser = users.findByEmail(rawEmail)
+        const applied = existingUser !== null
+        if (applied) {
+          plans.setPlan(existingUser.id, plan)
+        }
+
+        return Response.json({ email: rawEmail, plan, applied })
+      }
+
       // ---- /invite/:token ---- (public, sets invite cookie + 302 OAuth)
       const inviteMatch = pathname.match(/^\/invite\/([0-9a-f]{8,128})$/)
       if (inviteMatch) {
@@ -1201,6 +1245,15 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
           name: profile.name,
           picture_url: profile.picture_url,
         })
+
+        // Apply any plan stored on the allowed_emails row. This fires on every
+        // login so a plan bump via /admin/users takes effect at next sign-in
+        // even if the user was already in the DB.
+        const storedPlan = allowedEmails.planFor(profile.email)
+        if (storedPlan !== null) {
+          plans.setPlan(user.id, storedPlan)
+        }
+
         const session = sessions.create(user.id)
 
         // Three Set-Cookie headers in the success path:
@@ -1329,6 +1382,13 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
           name: profile.name,
           picture_url: profile.picture_url,
         })
+
+        // Apply any plan stored on the allowed_emails row (same as web OAuth).
+        const desktopStoredPlan = allowedEmails.planFor(profile.email)
+        if (desktopStoredPlan !== null) {
+          plans.setPlan(user.id, desktopStoredPlan)
+        }
+
         const device = devices.create(user.id)
 
         const deepLink =
@@ -1456,6 +1516,14 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
       if (pathname === '/pro') {
         if (method !== 'GET') return new Response('Method Not Allowed', { status: 405 })
         return htmlResponse(proHtml)
+      }
+
+      // ---- /welcome ---- (public onboarding page, no auth required)
+      // Owner pastes this link in a DM when adding someone to the allowlist.
+      // Not cached by the SW (not in isApiPath + not in the precache list).
+      if (pathname === '/welcome') {
+        if (method !== 'GET') return new Response('Method Not Allowed', { status: 405 })
+        return htmlResponse(welcomeHtml)
       }
 
       if (pathname === '/login') {
