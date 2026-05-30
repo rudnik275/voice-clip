@@ -157,7 +157,48 @@ const SCHEMA_SQL = `
     PRIMARY KEY (user_id, month_key),
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   );
+
+  -- Per-account post-processing presets. Each preset has a name and a
+  -- system-instruction prompt that is applied to the raw transcript via a
+  -- second gpt-4o-mini chat.completions call. One preset can be "active" at
+  -- a time per user (stored in user_settings below); setting active_preset_id
+  -- to NULL means no post-processing for that user.
+  CREATE TABLE IF NOT EXISTS presets (
+    id         TEXT PRIMARY KEY,
+    user_id    TEXT NOT NULL,
+    name       TEXT NOT NULL,
+    prompt     TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_presets_user_id ON presets(user_id);
+
+  -- Thin key/value settings table scoped per user. Allows future expansion
+  -- without schema migrations. Currently only used to track active_preset_id.
+  CREATE TABLE IF NOT EXISTS user_settings (
+    user_id          TEXT PRIMARY KEY,
+    active_preset_id TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (active_preset_id) REFERENCES presets(id) ON DELETE SET NULL
+  );
 `
+
+// Idempotent column additions for history table — SQLite does not support
+// `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, so we attempt the migration and
+// swallow the "duplicate column name" error if it already ran on this DB.
+function migrateHistoryColumns(db: Database): void {
+  for (const col of [
+    'ALTER TABLE history ADD COLUMN preset_id TEXT',
+    'ALTER TABLE history ADD COLUMN raw_text TEXT',
+  ]) {
+    try {
+      db.exec(col)
+    } catch {
+      // "duplicate column name" — already migrated; safe to ignore.
+    }
+  }
+}
 
 export function openDb(path: string): DB {
   if (path !== ':memory:') {
@@ -169,5 +210,6 @@ export function openDb(path: string): DB {
   if (path !== ':memory:') db.exec('PRAGMA journal_mode = WAL')
   db.exec('PRAGMA foreign_keys = ON')
   db.exec(SCHEMA_SQL)
+  migrateHistoryColumns(db)
   return db
 }

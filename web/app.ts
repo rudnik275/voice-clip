@@ -122,7 +122,10 @@ type HistoryClip = {
   ts: number
 }
 type HistoryPage = { items: HistoryClip[]; nextSince?: number }
-type UploadResponse = { text: string; seq: number; recordedAt: string }
+type UploadResponse = { text: string; seq: number; recordedAt: string; presetId?: string }
+
+type PresetRow = { id: string; userId: string; name: string; prompt: string; createdAt: number }
+type PresetsResponse = { presets: PresetRow[]; activeId: string | null }
 
 const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T
 
@@ -152,6 +155,15 @@ const profileDevices = $<HTMLElement>('profile-devices')
 const userPillName = $<HTMLElement>('user-pill-name')
 const soundsToggle = $<HTMLButtonElement>('sounds-toggle')
 const soundsToggleState = $<HTMLElement>('sounds-toggle-state')
+// Preset panel elements
+const presetChips = $<HTMLElement>('preset-chips')
+const presetAddBtn = $<HTMLButtonElement>('preset-add-btn')
+const presetCreateForm = $<HTMLElement>('preset-create-form')
+const presetNameInput = $<HTMLInputElement>('preset-name-input')
+const presetPromptInput = $<HTMLTextAreaElement>('preset-prompt-input')
+const presetDictateBtn = $<HTMLButtonElement>('preset-dictate-btn')
+const presetSaveBtn = $<HTMLButtonElement>('preset-save-btn')
+const presetCancelBtn = $<HTMLButtonElement>('preset-cancel-btn')
 const soundsToggleAction = $<HTMLElement>('sounds-toggle-action')
 const ownerInviteBlock = $<HTMLElement>('owner-invite-block')
 const inviteGenerateBtn = $<HTMLButtonElement>('invite-generate')
@@ -984,13 +996,16 @@ async function failureMessage(r: Response): Promise<string> {
   return `ошибка загрузки (${r.status})`
 }
 
-function uploadAndTranscribe(blob: Blob, recordedAt: string): Promise<string> {
+function uploadAndTranscribe(blob: Blob, recordedAt: string, uploadPresetId?: string | null): Promise<string> {
   const filename = `clip.${extForMime(blob.type || recordMime)}`
 
   const attempt = async (n: number): Promise<string> => {
     const fd = new FormData()
     fd.set('audio', blob, filename)
     fd.set('recordedAt', recordedAt)
+    // presetId travels with the upload so offline-drained clips apply the
+    // preset that was active at record time, not whatever is active at drain time.
+    if (uploadPresetId) fd.set('presetId', uploadPresetId)
 
     let r: Response
     try {
@@ -1048,6 +1063,7 @@ function gateAndUpload(
   voiceFraction: number,
   snapTotalFrames: number,
   snapVoiceFrames: number,
+  uploadPresetId?: string | null,
 ): Promise<string> {
   if (durationMs < MIN_RECORD_MS || blob.size < MIN_RECORD_BYTES) {
     throw new TooShort()
@@ -1066,7 +1082,7 @@ function gateAndUpload(
     })
     throw new TooQuiet()
   }
-  return uploadAndTranscribe(blob, recordedAt)
+  return uploadAndTranscribe(blob, recordedAt, uploadPresetId)
 }
 
 // Tear down the recording UI (pause control, paused state, meters) and
@@ -1125,6 +1141,13 @@ async function stopRecording() {
   // the user gesture. Hand it a PENDING ClipboardItem promise NOW so the
   // grant survives the async upload — it resolves to the transcript once the
   // round-trip completes (or rejects harmlessly if nothing was captured).
+  // Snapshot the active preset at record time — this is the ID we'll send
+  // with the upload so offline-drained clips apply the right preset even if
+  // the user switches presets between record and drain.
+  const recordTimePresetId = presetSkipNextClip ? null : getActivePresetId()
+  // Reset the per-clip skip toggle now that we've captured its value.
+  if (presetSkipNextClip) presetSkipNextClip = false
+
   const textPromise = stopped.then((blob) =>
     gateAndUpload(
       blob,
@@ -1134,6 +1157,7 @@ async function stopRecording() {
       voiceFraction,
       snapTotalFrames,
       snapVoiceFrames,
+      recordTimePresetId,
     ),
   )
 
@@ -1234,7 +1258,10 @@ async function finalizeSuspended() {
       voiceFraction,
       snapTotalFrames,
       snapVoiceFrames,
+      presetSkipNextClip ? null : getActivePresetId(),
     )
+    // Clear skip toggle on finalize path too.
+    presetSkipNextClip = false
     try {
       await navigator.clipboard.writeText(text)
     } catch {
@@ -1351,6 +1378,279 @@ document.addEventListener('visibilitychange', () => {
 
 recPause.addEventListener('click', () => togglePause())
 
+// ---- presets ----
+//
+// Server-persisted named post-processing presets. The active preset id is
+// stored in localStorage for instant boot paint (avoids a flash), then
+// confirmed / updated from /api/presets on boot.
+//
+// State:
+//   presetList     — all presets for this user (sorted by createdAt ASC)
+//   activePresetId — the id of the active preset, or null = off
+//   presetSkipNextClip — per-clip "off for this clip" toggle
+
+const PRESET_CACHE_KEY = 'vc:presets'
+const PRESET_ACTIVE_KEY = 'vc:activePresetId'
+
+let presetList: PresetRow[] = []
+let activePresetId: string | null = null
+// Toggle to suppress the preset for just the next clip without deleting it.
+let presetSkipNextClip = false
+
+function readCachedPresets(): { presets: PresetRow[]; activeId: string | null } {
+  try {
+    const raw = localStorage.getItem(PRESET_CACHE_KEY)
+    const presets = raw ? (JSON.parse(raw) as PresetRow[]) : []
+    const activeId = localStorage.getItem(PRESET_ACTIVE_KEY) ?? null
+    return { presets, activeId }
+  } catch {
+    return { presets: [], activeId: null }
+  }
+}
+
+function savePresetsToCache(list: PresetRow[], activeId: string | null): void {
+  try {
+    localStorage.setItem(PRESET_CACHE_KEY, JSON.stringify(list))
+    if (activeId !== null) localStorage.setItem(PRESET_ACTIVE_KEY, activeId)
+    else localStorage.removeItem(PRESET_ACTIVE_KEY)
+  } catch {
+    /* private mode / storage quota */
+  }
+}
+
+function getActivePresetId(): string | null {
+  return activePresetId
+}
+
+function renderPresetChips(): void {
+  presetChips.innerHTML = ''
+
+  // "Off" chip always first
+  const offChip = document.createElement('button')
+  offChip.type = 'button'
+  offChip.className = 'preset-chip is-off' + (activePresetId === null ? ' is-active' : '')
+  offChip.textContent = 'Off'
+  offChip.addEventListener('click', () => {
+    setActivePreset(null)
+  })
+  presetChips.append(offChip)
+
+  for (const p of presetList) {
+    const chip = document.createElement('button')
+    chip.type = 'button'
+    chip.className = 'preset-chip' + (p.id === activePresetId ? ' is-active' : '')
+    chip.dataset.id = p.id
+
+    const label = document.createElement('span')
+    label.textContent = p.name
+
+    const del = document.createElement('button')
+    del.type = 'button'
+    del.className = 'preset-chip-del'
+    del.textContent = '×'
+    del.setAttribute('aria-label', `Delete ${p.name}`)
+    del.addEventListener('click', (e) => {
+      e.stopPropagation()
+      void deletePreset(p.id)
+    })
+
+    chip.append(label, del)
+    chip.addEventListener('click', () => {
+      setActivePreset(p.id === activePresetId ? null : p.id)
+    })
+    presetChips.append(chip)
+  }
+}
+
+function setActivePreset(id: string | null): void {
+  activePresetId = id
+  presetSkipNextClip = false
+  savePresetsToCache(presetList, activePresetId)
+  renderPresetChips()
+  // Persist to server (fire and forget — local state is canonical for the next upload)
+  void fetch('/api/presets/active', {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ id }),
+  }).catch(() => {})
+}
+
+async function deletePreset(id: string): Promise<void> {
+  try {
+    const r = await fetch(`/api/presets/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      credentials: 'include',
+    })
+    if (!r.ok) {
+      showStatus('Failed to delete preset', 'error')
+      return
+    }
+    presetList = presetList.filter((p) => p.id !== id)
+    if (activePresetId === id) activePresetId = null
+    savePresetsToCache(presetList, activePresetId)
+    renderPresetChips()
+  } catch {
+    showStatus('Failed to delete preset', 'error')
+  }
+}
+
+async function createPreset(name: string, prompt: string): Promise<void> {
+  try {
+    const r = await fetch('/api/presets', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name, prompt }),
+    })
+    if (!r.ok) {
+      const body = (await r.json().catch(() => ({}))) as { error?: string }
+      showStatus(body.error ?? 'Failed to create preset', 'error')
+      return
+    }
+    const preset = (await r.json()) as PresetRow
+    presetList = [...presetList, preset]
+    // Auto-activate the newly created preset
+    activePresetId = preset.id
+    savePresetsToCache(presetList, activePresetId)
+    renderPresetChips()
+    // Also set it active on the server
+    void fetch('/api/presets/active', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: preset.id }),
+    }).catch(() => {})
+  } catch {
+    showStatus('Failed to create preset', 'error')
+  }
+}
+
+async function loadPresets(): Promise<void> {
+  try {
+    const r = await fetch('/api/presets', { credentials: 'include' })
+    if (!r.ok) return
+    const data = (await r.json()) as PresetsResponse
+    presetList = data.presets
+    activePresetId = data.activeId
+    savePresetsToCache(presetList, activePresetId)
+    renderPresetChips()
+  } catch {
+    /* non-fatal — local cache is already rendered */
+  }
+}
+
+// Boot from cache for instant paint, then refresh from server
+;((): void => {
+  const cached = readCachedPresets()
+  presetList = cached.presets
+  activePresetId = cached.activeId
+  renderPresetChips()
+})()
+
+// Show/hide the create form
+presetAddBtn.addEventListener('click', () => {
+  presetCreateForm.hidden = !presetCreateForm.hidden
+  if (!presetCreateForm.hidden) {
+    presetNameInput.value = ''
+    presetPromptInput.value = ''
+    presetNameInput.focus()
+  }
+})
+presetCancelBtn.addEventListener('click', () => {
+  presetCreateForm.hidden = true
+})
+
+presetSaveBtn.addEventListener('click', async () => {
+  const name = presetNameInput.value.trim()
+  const prompt = presetPromptInput.value.trim()
+  if (!name) { presetNameInput.focus(); return }
+  if (!prompt) { presetPromptInput.focus(); return }
+  presetSaveBtn.disabled = true
+  try {
+    await createPreset(name, prompt)
+    presetCreateForm.hidden = true
+  } finally {
+    presetSaveBtn.disabled = false
+  }
+})
+
+// Dictate into the prompt textarea — records a clip, transcribes it, and
+// drops the resulting text into presetPromptInput instead of sending to
+// clipboard. Uses the same MediaRecorder flow as the main button.
+let dictateRecording = false
+let dictateMediaRecorder: MediaRecorder | undefined
+let dictateChunks: Blob[] = []
+let dictateMicStream: MediaStream | undefined
+
+async function startDictate(): Promise<void> {
+  if (dictateRecording || recording || transcribing) return
+  dictateRecording = true
+  presetDictateBtn.classList.add('is-recording')
+  try {
+    dictateMicStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    dictateChunks = []
+    const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus'
+      : MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4'
+    dictateMediaRecorder = new MediaRecorder(dictateMicStream, { mimeType: mime })
+    dictateMediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) dictateChunks.push(e.data)
+    }
+    dictateMediaRecorder.start(250)
+  } catch (e) {
+    dictateRecording = false
+    presetDictateBtn.classList.remove('is-recording')
+    showStatus('Mic not available', 'error')
+    void e
+  }
+}
+
+async function stopDictate(): Promise<void> {
+  if (!dictateRecording || !dictateMediaRecorder) return
+  dictateRecording = false
+  presetDictateBtn.classList.remove('is-recording')
+
+  const stopped = new Promise<Blob>((res) => {
+    dictateMediaRecorder!.onstop = () => {
+      const mime = dictateMediaRecorder!.mimeType || 'audio/webm'
+      res(new Blob(dictateChunks, { type: mime }))
+    }
+  })
+  dictateMediaRecorder.stop()
+  if (dictateMicStream) {
+    for (const t of dictateMicStream.getTracks()) t.stop()
+    dictateMicStream = undefined
+  }
+
+  const blob = await stopped
+  if (blob.size < 1200) return // too short — ignore
+
+  presetDictateBtn.disabled = true
+  try {
+    const filename = `dictate.${blob.type.includes('webm') ? 'webm' : 'm4a'}`
+    const fd = new FormData()
+    fd.set('audio', blob, filename)
+    fd.set('recordedAt', new Date().toISOString())
+    // No presetId — dictation is a raw transcription only.
+    const r = await fetch('/upload', { method: 'POST', body: fd, credentials: 'include' })
+    if (r.ok) {
+      const body = (await r.json()) as UploadResponse
+      // Append (not replace) so the user can build up a multi-sentence prompt.
+      const cur = presetPromptInput.value
+      presetPromptInput.value = cur ? `${cur} ${body.text}` : body.text
+    }
+  } catch {
+    /* non-fatal */
+  } finally {
+    presetDictateBtn.disabled = false
+  }
+}
+
+presetDictateBtn.addEventListener('click', () => {
+  if (dictateRecording) void stopDictate()
+  else void startDictate()
+})
+
 // ---- boot ----
 
 // REC button is shown on every client — mobile, desktop browser, Tauri
@@ -1408,6 +1708,9 @@ async function bootAuth(): Promise<void> {
   }
   ownerInviteBlock.hidden = !me.is_owner
   paintQuotaChip(me)
+  // Load presets from server on successful auth — mirrors any changes made
+  // from another device and reconciles against the localStorage cache.
+  void loadPresets()
 }
 
 void bootAuth()

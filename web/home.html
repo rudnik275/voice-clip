@@ -92,6 +92,36 @@
       </button>
     </main>
 
+    <!-- Preset panel — shown below the record button. Lets the user pick an
+         active post-processing preset (or off) and create/delete presets.
+         JS populates .preset-chips and wires the create form. -->
+    <div class="preset-panel" id="preset-panel">
+      <div class="preset-row">
+        <div class="preset-chips" id="preset-chips">
+          <!-- chips rendered by app.ts -->
+        </div>
+        <button class="preset-add-btn" id="preset-add-btn" type="button" aria-label="New preset" title="New preset">+</button>
+      </div>
+      <!-- Inline create form — hidden until user taps + -->
+      <div class="preset-create-form" id="preset-create-form" hidden>
+        <input class="preset-name-input" id="preset-name-input" type="text" placeholder="Preset name…" maxlength="60" autocomplete="off" />
+        <div class="preset-prompt-row">
+          <textarea class="preset-prompt-input" id="preset-prompt-input" placeholder="System instruction…" rows="2" maxlength="1000"></textarea>
+          <button class="preset-dictate-btn" id="preset-dictate-btn" type="button" aria-label="Dictate prompt" title="Dictate into the prompt">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="9" y="2" width="6" height="12" rx="3" />
+              <path d="M5 11a7 7 0 0 0 14 0" />
+              <path d="M12 18v4" />
+            </svg>
+          </button>
+        </div>
+        <div class="preset-create-actions">
+          <button class="preset-save-btn" id="preset-save-btn" type="button">Save</button>
+          <button class="preset-cancel-btn" id="preset-cancel-btn" type="button">Cancel</button>
+        </div>
+      </div>
+    </div>
+
     <p id="status" role="status" aria-live="polite"></p>
 
     <div class="history-modal" id="history-modal" hidden>

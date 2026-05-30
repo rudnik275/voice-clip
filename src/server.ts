@@ -31,9 +31,10 @@ import {
   createPendingDeliveriesStore,
   type PendingDeliveriesStore,
 } from './pending-deliveries-store'
+import { createPresetsStore, type PresetsStore } from './presets-store'
 import { createLiveBus, type LiveBus } from './live-bus'
-import type { TranscriptionResult } from './transcribe'
-import { calcCostUsd } from './pricing'
+import type { TranscriptionResult, PostProcessResult } from './transcribe'
+import { calcCostUsd, calcChatCostUsd } from './pricing'
 import { createGoogleOAuth, type GoogleFetcher, type GoogleOAuth } from './google-oauth'
 import {
   buildClearInviteCookie,
@@ -83,6 +84,7 @@ export interface ServerDeps {
   allowedEmails?: AllowedEmailsStore
   invites?: InvitesStore
   plans?: PlansStore
+  presets?: PresetsStore
   // Override the free-tier monthly clip cap. Default 30. 0 = disable the
   // gate entirely (useful for tests + early ops).
   freeTierMonthlyLimit?: number
@@ -95,6 +97,9 @@ export interface ServerDeps {
   maxAudioBytes?: number
   liveBus?: LiveBus
   transcribe?: (input: Uint8Array, filename: string) => Promise<TranscriptionResult>
+  // Optional test seam for the second-pass gpt-4o-mini post-processing call.
+  // If omitted, the real postProcessTranscript() from ./transcribe is used.
+  postProcess?: (text: string, presetPrompt: string) => Promise<PostProcessResult>
   db?: DB
   now?: () => number
 }
@@ -190,6 +195,7 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
 
   const invites = deps.invites ?? createInvitesStore(db, deps.now)
   const plans = deps.plans ?? createPlansStore(db, deps.now)
+  const presets = deps.presets ?? createPresetsStore(db, deps.now)
   const FREE_TIER_LIMIT = deps.freeTierMonthlyLimit ?? 30
   const PRO_TIER_LIMIT = deps.proTierMonthlyLimit ?? 50
   const MAX_AUDIO_BYTES = deps.maxAudioBytes ?? 5 * 1024 * 1024
@@ -250,6 +256,17 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
       realTranscribe = (await import('./transcribe')).transcribeAudio
     }
     return realTranscribe(bytes, name)
+  }
+
+  // Lazy-load the real post-process function the same way — avoids importing
+  // ./config in tests that don't exercise this code path.
+  let realPostProcess: ServerDeps['postProcess'] | undefined
+  const postProcess: NonNullable<ServerDeps['postProcess']> = async (text, prompt) => {
+    if (deps.postProcess) return deps.postProcess(text, prompt)
+    if (!realPostProcess) {
+      realPostProcess = (await import('./transcribe')).postProcessTranscript
+    }
+    return realPostProcess(text, prompt)
   }
 
   // Google OAuth is optional in tests that don't exercise it — but for /auth
@@ -705,6 +722,8 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
             : new Date().toISOString()
         const sourceRaw = form.get('source')
         const source = sourceRaw === 'offline' ? 'offline' : 'online'
+        const presetIdRaw = form.get('presetId')
+        const presetId = typeof presetIdRaw === 'string' && presetIdRaw.length > 0 ? presetIdRaw : null
 
         const bytes = new Uint8Array(await audio.arrayBuffer())
         const filename = (audio as File).name || 'clip.webm'
@@ -778,13 +797,46 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
             `type=${(audio as Blob).type || '?'} bytes=${bytes.length} src=${source} chars=${result.text.length}`,
         )
 
-        const costUsd = result.usage ? calcCostUsd(result.usage) : 0
+        // Post-processing via gpt-4o-mini (second-pass preset transformation).
+        // Resolve the preset only when the client sends a presetId AND it belongs
+        // to this user — guards against ID forgery / cross-user access.
+        const rawTranscript = result.text
+        let finalText = rawTranscript
+        let resolvedPresetId: string | null = null
+        let postProcessCostUsd = 0
+
+        if (presetId) {
+          const preset = presets.get(authed.user.id, presetId)
+          if (preset) {
+            resolvedPresetId = preset.id
+            try {
+              const ppResult = await postProcess(rawTranscript, preset.prompt)
+              finalText = ppResult.text
+              postProcessCostUsd = ppResult.usage ? calcChatCostUsd(ppResult.usage) : 0
+              console.log(
+                `[upload] post-process ok user=${authed.user.id} preset=${preset.id} ` +
+                  `chars=${rawTranscript.length}->${finalText.length}`,
+              )
+            } catch (e) {
+              // Post-processing failure is non-fatal — fall back to the raw
+              // transcript so the clip still lands in history and clipboard.
+              console.error(`[upload] post-process failed user=${authed.user.id} preset=${preset.id}: ${(e as Error).message}`)
+              finalText = rawTranscript
+              resolvedPresetId = null
+            }
+          }
+        }
+
+        const transcriptionCostUsd = result.usage ? calcCostUsd(result.usage) : 0
+        const costUsd = transcriptionCostUsd + postProcessCostUsd
         const clip = history.append({
           userId: authed.user.id,
-          text: result.text,
+          text: finalText,
           recordedAt,
           source,
           costUsd,
+          presetId: resolvedPresetId,
+          rawText: resolvedPresetId ? rawTranscript : null,
         })
         if (costUsd > 0) costs.add(authed.user.id, costUsd)
         // Bump the monthly clip counter for the quota gate. Increment AFTER
@@ -814,6 +866,7 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
           seq: clip.seq,
           recordedAt: clip.recordedAt,
           cost: costUsd,
+          presetId: clip.presetId ?? undefined,
         })
       }
 
@@ -849,6 +902,74 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
           user: costs.userTotal(authed.user.id),
           aggregate: costs.aggregateTotal(),
         })
+      }
+
+      // ---- /api/presets ----
+      // CRUD for per-user post-processing presets.
+      // GET  /api/presets         → { presets: [...], activeId }
+      // POST /api/presets         { name, prompt } → created preset
+      // POST /api/presets/active  { id: string|null } → set/clear active preset
+      // DELETE /api/presets/:id   → { ok: true }
+      if (pathname === '/api/presets') {
+        const authed = resolveUserFromRequest(req, sessions, users)
+        if (!authed) return unauthorized()
+
+        if (method === 'GET') {
+          const list = presets.list(authed.user.id)
+          const activeId = presets.getActiveId(authed.user.id)
+          return Response.json({ presets: list, activeId })
+        }
+
+        if (method === 'POST') {
+          let body: unknown
+          try { body = await req.json() } catch { return Response.json({ error: 'expected JSON body' }, { status: 400 }) }
+          const name = typeof (body as Record<string, unknown>)?.name === 'string' ? (body as Record<string, unknown>).name as string : ''
+          const prompt = typeof (body as Record<string, unknown>)?.prompt === 'string' ? (body as Record<string, unknown>).prompt as string : ''
+          if (!name.trim()) return Response.json({ error: 'name is required' }, { status: 400 })
+          if (!prompt.trim()) return Response.json({ error: 'prompt is required' }, { status: 400 })
+          const preset = presets.create(authed.user.id, { name: name.trim(), prompt: prompt.trim() })
+          return Response.json(preset, { status: 201 })
+        }
+
+        return new Response('Method Not Allowed', { status: 405 })
+      }
+
+      if (pathname === '/api/presets/active') {
+        const authed = resolveUserFromRequest(req, sessions, users)
+        if (!authed) return unauthorized()
+        if (method !== 'POST') return new Response('Method Not Allowed', { status: 405 })
+
+        let body: unknown
+        try { body = await req.json() } catch { return Response.json({ error: 'expected JSON body' }, { status: 400 }) }
+        const id = (body as Record<string, unknown>)?.id
+        // id === null means "clear active"; any string is treated as a preset id to activate
+        if (id !== null && typeof id !== 'string') {
+          return Response.json({ error: 'id must be a string or null' }, { status: 400 })
+        }
+        // Verify the preset belongs to this user before activating it
+        if (typeof id === 'string') {
+          const preset = presets.get(authed.user.id, id)
+          if (!preset) return Response.json({ error: 'preset not found' }, { status: 404 })
+        }
+        presets.setActiveId(authed.user.id, typeof id === 'string' ? id : null)
+        return Response.json({ ok: true, activeId: typeof id === 'string' ? id : null })
+      }
+
+      // DELETE /api/presets/:id — also clears active if it was this preset
+      if (pathname.startsWith('/api/presets/')) {
+        const authed = resolveUserFromRequest(req, sessions, users)
+        if (!authed) return unauthorized()
+        if (method !== 'DELETE') return new Response('Method Not Allowed', { status: 405 })
+
+        const id = pathname.slice('/api/presets/'.length)
+        const preset = presets.get(authed.user.id, id)
+        if (!preset) return Response.json({ error: 'not found' }, { status: 404 })
+
+        // Clear active if it was this preset, then delete
+        const activeId = presets.getActiveId(authed.user.id)
+        if (activeId === id) presets.setActiveId(authed.user.id, null)
+        presets.delete(authed.user.id, id)
+        return Response.json({ ok: true })
       }
 
       // ---- /clip/copy (session auth) ----
