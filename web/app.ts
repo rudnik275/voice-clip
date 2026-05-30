@@ -22,6 +22,7 @@ import {
   playStartRec,
   playStopRec,
   playSuccess,
+  primeAudioSession,
   setMuted,
   unlockAudio,
 } from './sounds'
@@ -807,13 +808,13 @@ function forceReleaseMic() {
 // created fresh each time because they are tied to the per-recording mic
 // stream — this keeps the voice meter alive every recording.
 function startMeters(s: MediaStream) {
+  // Re-assert the iOS audio session category immediately before creating or
+  // resuming the meter context. primeAudioSession() is idempotent and
+  // no-ops on non-iOS; calling it here is a belt-and-suspenders guard for
+  // cases where unlockAudio() wasn't called (e.g. fast programmatic start).
+  primeAudioSession()
   if (!audioCtx) {
     audioCtx = new AudioContext()
-    // Hint the iOS audio session toward play-and-record so the category
-    // switch (and its audible artifact) is avoided on subsequent recordings.
-    // Feature-detect: audioSession is iOS 16.4+ only.
-    const nav = navigator as any
-    if (nav.audioSession) nav.audioSession.type = 'play-and-record'
   }
   // Always resume — iOS suspends a persistent context when the page is
   // backgrounded or when the context sits idle between recordings.
@@ -1313,6 +1314,12 @@ document.addEventListener('visibilitychange', () => {
   // Page came back. Returning the PWA from background suspends both the
   // AudioContext and the MediaStream tracks on iOS. Re-arm the audio graph
   // immediately so the first tap is instant.
+  //
+  // Re-assert play-and-record BEFORE resuming anything — iOS resets the
+  // AVAudioSession category when the app is backgrounded, so if we don't
+  // re-hint here the next getUserMedia / AudioContext resume will trigger
+  // a category switch and its associated audible click.
+  primeAudioSession()
   unlockAudio()
 
   // We paused an in-progress recording when we left. Decide what to do based
@@ -1350,6 +1357,17 @@ document.addEventListener('visibilitychange', () => {
 })
 
 recPause.addEventListener('click', () => togglePause())
+
+// Standalone PWAs on iOS fire `pageshow` when the app is resumed from the
+// app switcher (in addition to visibilitychange). Re-prime the audio session
+// here so that a recording started immediately after re-opening doesn't
+// trigger an AVAudioSession route-change click. The `persisted` flag is true
+// when the page was restored from the bfcache (common for standalone PWAs).
+window.addEventListener('pageshow', () => {
+  primeAudioSession()
+  unlockAudio()
+  if (audioCtx && audioCtx.state === 'suspended') void audioCtx.resume()
+})
 
 // ---- boot ----
 
