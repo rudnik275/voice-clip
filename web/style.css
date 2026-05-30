@@ -93,7 +93,12 @@ main {
   justify-content: center;
   height: 100dvh;
   padding: 0 20px;
-  gap: 22px;
+  /* Must clear the recording button's peak voice-reactive spread: the black
+     outline ring grows to 6+22=28px (see #rec.recording). At the old 22px the
+     ring crossed into #rec-pause, leaving a thin cream sliver that read as a
+     stray "white border" on the pause button (most visible in an iPad floating
+     window). 36px keeps the halo/ring clear of the pause control. */
+  gap: 36px;
 }
 
 /* === Record button — the centerpiece === */
