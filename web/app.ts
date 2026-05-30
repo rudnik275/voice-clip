@@ -159,7 +159,8 @@ const soundsToggleState = $<HTMLElement>('sounds-toggle-state')
 // Preset panel elements
 const presetChips = $<HTMLElement>('preset-chips')
 const presetAddBtn = $<HTMLButtonElement>('preset-add-btn')
-const presetCreateForm = $<HTMLElement>('preset-create-form')
+const presetModal = $<HTMLElement>('preset-modal')
+const presetBackdrop = $<HTMLElement>('preset-backdrop')
 const presetNameInput = $<HTMLInputElement>('preset-name-input')
 const presetPromptInput = $<HTMLTextAreaElement>('preset-prompt-input')
 const presetDictateBtn = $<HTMLButtonElement>('preset-dictate-btn')
@@ -1556,17 +1557,19 @@ async function loadPresets(): Promise<void> {
 })()
 
 // Show/hide the create form
-presetAddBtn.addEventListener('click', () => {
-  presetCreateForm.hidden = !presetCreateForm.hidden
-  if (!presetCreateForm.hidden) {
-    presetNameInput.value = ''
-    presetPromptInput.value = ''
-    presetNameInput.focus()
-  }
-})
-presetCancelBtn.addEventListener('click', () => {
-  presetCreateForm.hidden = true
-})
+function openPresetModal() {
+  presetNameInput.value = ''
+  presetPromptInput.value = ''
+  presetModal.hidden = false
+  playModal()
+  presetNameInput.focus()
+}
+function closePresetModal() {
+  presetModal.hidden = true
+}
+presetAddBtn.addEventListener('click', openPresetModal)
+presetCancelBtn.addEventListener('click', closePresetModal)
+presetBackdrop.addEventListener('click', closePresetModal)
 
 presetSaveBtn.addEventListener('click', async () => {
   const name = presetNameInput.value.trim()
@@ -1576,7 +1579,7 @@ presetSaveBtn.addEventListener('click', async () => {
   presetSaveBtn.disabled = true
   try {
     await createPreset(name, prompt)
-    presetCreateForm.hidden = true
+    closePresetModal()
   } finally {
     presetSaveBtn.disabled = false
   }

@@ -1279,6 +1279,11 @@ main {
   overflow-x: auto;
   gap: 6px;
   flex: 1;
+  /* overflow-x:auto forces overflow-y to auto too, which clips each chip's
+     hard offset shadow (4px down-right) — the bottom edge of the OFF chip
+     read as "cut off". This padding gives the shadow + active-press travel
+     room inside the scroll box. */
+  padding: 2px 6px 8px 2px;
   scrollbar-width: none;
   /* scrollbar on webkit */
   -ms-overflow-style: none;
@@ -1338,10 +1343,10 @@ main {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
-  min-width: 36px;
-  font-size: 22px;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  font-size: 26px;
   font-weight: 700;
   font-family: inherit;
   background: var(--white);
@@ -1359,16 +1364,61 @@ main {
   box-shadow: 0 0 0 var(--fg);
 }
 
-/* Create form */
-.preset-create-form {
+/* === Create-preset modal (bottom sheet) ===
+   Self-contained so it doesn't piggyback the history/profile modal rules.
+   Was an inline panel that grew upward off the bottom-fixed preset row and
+   collided with the record + pause buttons; a backdrop'd bottom sheet keeps
+   it clear of everything and matches the app's other modals. */
+.preset-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+.preset-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(9, 9, 11, 0.45);
+  animation: preset-fade 0.2s ease;
+}
+.preset-sheet {
+  position: relative;
+  width: 100%;
+  max-width: 480px;
+  max-height: 82vh;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
   background: var(--white);
-  border: var(--border);
-  border-radius: 16px;
-  padding: 14px 14px 12px;
-  box-shadow: var(--shadow-md);
+  border: var(--border-strong);
+  border-bottom: none;
+  border-radius: 24px 24px 0 0;
+  box-shadow: var(--shadow-lg);
+  padding: 22px 20px calc(env(safe-area-inset-bottom, 0px) + 22px);
+  animation: preset-slide 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes preset-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes preset-slide {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+/* gap handles head→fields spacing; head needs no bottom margin of its own */
+.preset-head {
+  display: flex;
+  align-items: center;
+  margin-bottom: 0;
+}
+.preset-head h2 {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 0;
 }
 
 .preset-name-input,
@@ -1469,9 +1519,4 @@ main {
 .preset-cancel-btn:active {
   transform: translate(4px, 4px);
   box-shadow: 0 0 0 var(--fg);
-}
-
-/* Push #status up so it never overlaps the preset panel */
-#status.show {
-  bottom: max(env(safe-area-inset-bottom, 0px) + 120px, 136px);
 }
