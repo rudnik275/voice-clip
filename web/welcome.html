@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#FFFDF5" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <link rel="icon" type="image/svg+xml" href="/icons/voice-clip-mark.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <title>Добро пожаловать — voice-clip</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+    <style>
+      /* Self-contained Neo-Brutalism. See access-denied.html / pro.html for
+         the pattern. cream + red + violet, thick black borders, hard offset
+         shadows, NO blur/glass. Space Grotesk. */
+      * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+      [hidden] { display: none !important; }
+      :root {
+        --bg: #FFFDF5;
+        --fg: #09090B;
+        --muted: #5A5A6E;
+        --white: #FFFFFF;
+        --red: #FF6B6B;
+        --violet: #B5A8FF;
+        --yellow: #FFD93D;
+        --green: #A7E8BD;
+        --orange: #FFB088;
+        --press: 100ms linear;
+      }
+      html, body {
+        margin: 0; padding: 0; min-height: 100%;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        letter-spacing: -0.005em;
+      }
+      body::before {
+        content: ""; position: fixed; inset: 0;
+        background-image: radial-gradient(circle at 1px 1px, rgba(9,9,11,0.12) 1.4px, transparent 0);
+        background-size: 24px 24px;
+        pointer-events: none; z-index: 0; opacity: 0.55;
+        mask-image: radial-gradient(ellipse 90% 80% at 50% 50%, black 30%, transparent 95%);
+        -webkit-mask-image: radial-gradient(ellipse 90% 80% at 50% 50%, black 30%, transparent 95%);
+      }
+      .page {
+        position: relative; z-index: 1;
+        max-width: 680px;
+        margin: 0 auto;
+        padding: 40px 20px 80px;
+      }
+
+      /* ---- hero ---- */
+      .hero {
+        display: flex; flex-direction: column;
+        align-items: flex-start; gap: 16px;
+        margin-bottom: 48px;
+      }
+      .hero-sticker {
+        display: inline-block;
+        padding: 8px 16px 10px;
+        background: var(--red);
+        color: var(--white);
+        border: 3px solid var(--fg);
+        box-shadow: 5px 5px 0 var(--fg);
+        transform: rotate(-1.5deg);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        line-height: 1;
+      }
+      .hero-title {
+        font-size: clamp(32px, 7vw, 52px);
+        font-weight: 800;
+        letter-spacing: -0.03em;
+        line-height: 1.05;
+        margin: 0;
+      }
+      .hero-title .hl {
+        background: var(--violet);
+        padding: 2px 8px;
+        border: 3px solid var(--fg);
+        box-shadow: 4px 4px 0 var(--fg);
+        display: inline-block;
+        transform: rotate(-1deg);
+        white-space: nowrap;
+      }
+      .hero-sub {
+        font-size: 17px;
+        font-weight: 500;
+        color: var(--muted);
+        max-width: 52ch;
+        line-height: 1.55;
+        margin: 0;
+      }
+      .hero-cta {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 14px 24px;
+        background: var(--red);
+        color: var(--white);
+        border: 3px solid var(--fg);
+        box-shadow: 6px 6px 0 var(--fg);
+        font-family: inherit;
+        font-size: 15px;
+        font-weight: 700;
+        letter-spacing: -0.005em;
+        text-decoration: none;
+        transition: transform var(--press), box-shadow var(--press);
+        margin-top: 8px;
+      }
+      .hero-cta:active {
+        transform: translate(6px, 6px);
+        box-shadow: 0 0 0 var(--fg);
+      }
+
+      /* ---- section card ---- */
+      .section {
+        margin-bottom: 36px;
+      }
+      .section-card {
+        background: var(--white);
+        border: 3px solid var(--fg);
+        box-shadow: 8px 8px 0 var(--fg);
+        padding: 28px 24px;
+      }
+      .section-label {
+        display: inline-block;
+        padding: 5px 12px 6px;
+        background: var(--yellow);
+        border: 2px solid var(--fg);
+        box-shadow: 3px 3px 0 var(--fg);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        margin-bottom: 14px;
+        transform: rotate(-1deg);
+      }
+      .section-title {
+        font-size: 22px;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        margin: 0 0 12px;
+      }
+      .section-body {
+        font-size: 15px;
+        font-weight: 500;
+        line-height: 1.6;
+        color: var(--fg);
+        margin: 0 0 16px;
+      }
+      .section-body:last-child { margin-bottom: 0; }
+
+      /* ---- steps list ---- */
+      .steps {
+        list-style: none;
+        margin: 16px 0 0;
+        padding: 0;
+        display: flex; flex-direction: column; gap: 10px;
+      }
+      .steps li {
+        display: flex;
+        align-items: flex-start;
+        gap: 12px;
+        font-size: 15px;
+        font-weight: 500;
+        line-height: 1.5;
+      }
+      .step-num {
+        flex-shrink: 0;
+        width: 28px; height: 28px;
+        background: var(--fg);
+        color: var(--bg);
+        border-radius: 0;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 13px;
+        font-weight: 700;
+        line-height: 1;
+      }
+      .steps .important {
+        background: var(--red);
+        color: var(--white);
+        padding: 1px 6px;
+        border: 2px solid var(--fg);
+        font-weight: 700;
+        white-space: nowrap;
+      }
+
+      /* ---- screenshot placeholder ---- */
+      .screenshot-slot {
+        width: 100%;
+        min-height: 160px;
+        background: var(--bg);
+        border: 3px dashed var(--fg);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin: 20px 0 0;
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--muted);
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        padding: 24px;
+        text-align: center;
+      }
+
+      /* ---- warning tape ---- */
+      .tape {
+        display: inline-block;
+        padding: 6px 12px 7px;
+        background: var(--orange);
+        border: 2px solid var(--fg);
+        box-shadow: 3px 3px 0 var(--fg);
+        font-size: 13px;
+        font-weight: 700;
+        color: var(--fg);
+        margin: 12px 0 0;
+        transform: rotate(-0.5deg);
+      }
+
+      /* ---- optional badge ---- */
+      .badge-optional {
+        display: inline-block;
+        padding: 4px 10px 5px;
+        background: var(--green);
+        border: 2px solid var(--fg);
+        box-shadow: 3px 3px 0 var(--fg);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        margin-bottom: 14px;
+      }
+
+      /* ---- code snippet ---- */
+      .code-block {
+        display: block;
+        background: var(--fg);
+        color: var(--bg);
+        padding: 12px 16px;
+        font-family: 'SF Mono', 'Fira Mono', 'Consolas', monospace;
+        font-size: 13px;
+        line-height: 1.5;
+        margin: 14px 0 0;
+        white-space: pre-wrap;
+        word-break: break-all;
+        border: 2px solid var(--fg);
+      }
+
+      /* ---- footer ---- */
+      .footer-version {
+        position: fixed;
+        bottom: max(env(safe-area-inset-bottom), 12px);
+        right: 14px;
+        padding: 4px 10px;
+        background: var(--white);
+        border: 2px solid var(--fg);
+        box-shadow: 3px 3px 0 var(--fg);
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--fg);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        font-variant-numeric: tabular-nums;
+        z-index: 2;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after {
+          animation-duration: 0.01ms !important;
+          transition-duration: 0.01ms !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+
+    <div class="page">
+
+      <!-- HERO -->
+      <div class="hero">
+        <span class="hero-sticker">Добро пожаловать</span>
+        <h1 class="hero-title">
+          Голос в буфер —<br>
+          <span class="hl">мгновенно</span>
+        </h1>
+        <p class="hero-sub">
+          Наговариваешь на телефоне — текст сразу появляется в буфере обмена на Mac.
+          Никаких копирований, никаких переключений. Записал — вставил.
+        </p>
+        <a class="hero-cta" href="/login">Войти через Google</a>
+      </div>
+
+      <!-- SECTION 1: Что это и что решает -->
+      <div class="section">
+        <div class="section-card">
+          <span class="section-label">Зачем это</span>
+          <h2 class="section-title">Голос → текст → Mac-буфер</h2>
+          <p class="section-body">
+            voice-clip это закрытый инструмент: диктуешь на телефоне, сервер транскрибирует через
+            OpenAI, результат сразу оказывается в буфере обмена на твоём Mac. Нажал Cmd+V — текст уже там.
+          </p>
+          <p class="section-body">
+            Работает для длинных сообщений, диктовки заметок, голосового ввода куда угодно —
+            без ручного переноса между устройствами.
+          </p>
+        </div>
+      </div>
+
+      <!-- SECTION 2: Установка PWA на iOS -->
+      <div class="section">
+        <div class="section-card">
+          <span class="section-label">Шаг 1</span>
+          <h2 class="section-title">Установка на iPhone / iPad</h2>
+          <p class="section-body">
+            Это PWA — устанавливается как приложение прямо с браузера, без App Store.
+          </p>
+          <div class="tape">Открывать ТОЛЬКО в Safari — не из Telegram / Mail / VK</div>
+          <ol class="steps" style="margin-top:18px;">
+            <li>
+              <span class="step-num">1</span>
+              <span>Открой эту ссылку в <span class="important">Safari</span> (встроенный браузер iPhone). Из Telegram или Mail ссылка откроется во встроенном вебвью — «Добавить на экран Домой» там недоступно.</span>
+            </li>
+            <li>
+              <span class="step-num">2</span>
+              <span>Внизу экрана нажми кнопку <span class="important">«Поделиться»</span> (квадратик со стрелкой вверх).</span>
+            </li>
+            <li>
+              <span class="step-num">3</span>
+              <span>В списке найди и нажми <span class="important">«На экран "Домой"»</span>.</span>
+            </li>
+            <li>
+              <span class="step-num">4</span>
+              <span>Нажми «Добавить» — иконка появится на рабочем столе.</span>
+            </li>
+            <li>
+              <span class="step-num">5</span>
+              <span>Открывай голосовой буфер всегда <span class="important">через иконку</span>, не через браузер. Только так PWA работает полноэкранно.</span>
+            </li>
+          </ol>
+          <div class="screenshot-slot">скриншот будет здесь — Поделиться → На экран «Домой»</div>
+        </div>
+      </div>
+
+      <!-- SECTION 3: Разрешение микрофона -->
+      <div class="section">
+        <div class="section-card">
+          <span class="section-label">Шаг 2</span>
+          <h2 class="section-title">Разрешение микрофона — один раз навсегда</h2>
+          <p class="section-body">
+            При первом нажатии на кнопку записи iOS спросит разрешение на микрофон.
+            Нажми <strong>«Разрешить»</strong> — и больше никогда не спросит.
+          </p>
+          <p class="section-body">
+            Если нажал «Не разрешать» или разрешение пропало — исправляется в одно место:
+          </p>
+          <ol class="steps">
+            <li>
+              <span class="step-num">1</span>
+              <span>Открой <span class="important">Настройки</span> на iPhone.</span>
+            </li>
+            <li>
+              <span class="step-num">2</span>
+              <span>Найди <span class="important">Safari</span> (или «voice-clip» если установлена PWA).</span>
+            </li>
+            <li>
+              <span class="step-num">3</span>
+              <span>Раздел «Разрешения» → Микрофон → выбери <span class="important">«Разрешить»</span>.</span>
+            </li>
+          </ol>
+          <p class="section-body" style="margin-top:14px; color: var(--muted);">
+            Почему это важно: iOS переспрашивает каждый раз, если разрешение выдано только
+            «однократно» — это мешает быстрой диктовке. Постоянное разрешение решает проблему.
+          </p>
+          <div class="screenshot-slot">скриншот будет здесь — iOS Настройки → Микрофон</div>
+        </div>
+      </div>
+
+      <!-- SECTION 4: Десктоп-приложение (опционально) -->
+      <div class="section">
+        <div class="section-card">
+          <span class="badge-optional">Опционально</span>
+          <h2 class="section-title">Mac-приложение — глобальный хоткей и автовставка</h2>
+          <p class="section-body">
+            Без Mac-приложения транскрипт попадает в буфер — жмёшь Cmd+V сам.
+            С приложением всё автоматически: текст вставляется в активное поле сразу после диктовки.
+            Плюс глобальный хоткей, чтобы открыть запись не переключая окна.
+          </p>
+          <p class="section-body">
+            Скачать последнюю версию:
+          </p>
+          <a class="hero-cta" href="/download/latest" style="margin-top:0; background: var(--violet); color: var(--fg);">
+            Скачать Mac-приложение (.dmg)
+          </a>
+
+          <h3 style="font-size:17px; font-weight:700; margin: 24px 0 10px; letter-spacing:-0.01em;">
+            Установка при ограничениях macOS (Gatekeeper)
+          </h3>
+          <p class="section-body">
+            macOS блокирует приложения не из App Store. Это нормально — обходится в два клика:
+          </p>
+          <ol class="steps">
+            <li>
+              <span class="step-num">1</span>
+              <span>Открой скачанный <span class="important">.dmg</span>, перетащи <strong>voice-clip.app</strong> в папку Applications.</span>
+            </li>
+            <li>
+              <span class="step-num">2</span>
+              <span>Попробуй открыть — macOS скажет «невозможно открыть». <span class="important">Не нажимай «Переместить в корзину»</span>.</span>
+            </li>
+            <li>
+              <span class="step-num">3</span>
+              <span>Зажми <span class="important">Ctrl</span> и кликни на иконку приложения → выбери <span class="important">«Открыть»</span> из меню.</span>
+            </li>
+            <li>
+              <span class="step-num">4</span>
+              <span>В диалоге снова нажми <span class="important">«Открыть»</span> — после этого macOS запомнит и больше не будет блокировать.</span>
+            </li>
+          </ol>
+          <div class="screenshot-slot">скриншот будет здесь — Ctrl+клик → Открыть</div>
+
+          <h3 style="font-size:17px; font-weight:700; margin: 24px 0 10px; letter-spacing:-0.01em;">
+            Разрешения после первого запуска
+          </h3>
+          <ol class="steps">
+            <li>
+              <span class="step-num">1</span>
+              <span><strong>Специальные возможности (Accessibility):</strong> macOS попросит разрешение для автовставки текста. Системные настройки → Конфиденциальность → Специальные возможности → включи voice-clip.</span>
+            </li>
+            <li>
+              <span class="step-num">2</span>
+              <span><strong>Микрофон:</strong> разреши, если хочешь диктовать прямо в Mac-приложении (не только с телефона).</span>
+            </li>
+          </ol>
+          <div class="screenshot-slot">скриншот будет здесь — Accessibility permission</div>
+
+          <h3 style="font-size:17px; font-weight:700; margin: 24px 0 10px; letter-spacing:-0.01em;">
+            Автозапуск при старте Mac
+          </h3>
+          <p class="section-body">
+            Чтобы приложение запускалось само при входе в систему:
+            Системные настройки → Основные → Объекты входа → «+» → выбери voice-clip.
+          </p>
+          <div class="screenshot-slot">скриншот будет здесь — Login Items</div>
+        </div>
+      </div>
+
+    </div><!-- .page -->
+
+    <div class="footer-version">__APP_VERSION__</div>
+
+  </body>
+</html>
