@@ -213,9 +213,7 @@ export function openDb(path: string): DB {
   if (path !== ':memory:') db.exec('PRAGMA journal_mode = WAL')
   db.exec('PRAGMA foreign_keys = ON')
   db.exec(SCHEMA_SQL)
-<<<<<<< HEAD
   migrateHistoryColumns(db)
-=======
 
   // Idempotent migration: add the `plan` column to allowed_emails for DBs
   // created before this column was added to the SCHEMA_SQL above.
@@ -227,6 +225,5 @@ export function openDb(path: string): DB {
     // column already present — safe to ignore
   }
 
->>>>>>> origin/master
   return db
 }
