@@ -93,8 +93,8 @@
     </main>
 
     <!-- Preset panel — shown below the record button. Lets the user pick an
-         active post-processing preset (or off) and create/delete presets.
-         JS populates .preset-chips and wires the create form. -->
+         active post-processing preset (or off). JS populates .preset-chips;
+         the "+" opens the create modal below. -->
     <div class="preset-panel" id="preset-panel">
       <div class="preset-row">
         <div class="preset-chips" id="preset-chips">
@@ -102,8 +102,18 @@
         </div>
         <button class="preset-add-btn" id="preset-add-btn" type="button" aria-label="New preset" title="New preset">+</button>
       </div>
-      <!-- Inline create form — hidden until user taps + -->
-      <div class="preset-create-form" id="preset-create-form" hidden>
+    </div>
+
+    <!-- Create-preset modal — a bottom sheet like the history / profile
+         modals. (Was an inline panel that grew upward off the bottom-fixed
+         preset row and collided with the record + pause buttons.) JS un-hides
+         it when the user taps the "+" in the preset row. -->
+    <div class="preset-modal" id="preset-modal" hidden>
+      <div class="preset-backdrop" id="preset-backdrop"></div>
+      <div class="preset-sheet">
+        <div class="preset-head">
+          <h2>New preset</h2>
+        </div>
         <input class="preset-name-input" id="preset-name-input" type="text" placeholder="Preset name…" maxlength="60" autocomplete="off" />
         <div class="preset-prompt-row">
           <textarea class="preset-prompt-input" id="preset-prompt-input" placeholder="System instruction…" rows="2" maxlength="1000"></textarea>
