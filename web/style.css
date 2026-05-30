@@ -1251,3 +1251,227 @@ main {
   margin: 4px 0 0;
   max-width: 320px;
 }
+
+/* === Preset panel === */
+
+.preset-panel {
+  position: fixed;
+  bottom: max(env(safe-area-inset-bottom, 0px) + 16px, 24px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(480px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  z-index: 5;
+}
+
+.preset-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Horizontal chip scroller */
+.preset-chips {
+  display: flex;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  gap: 6px;
+  flex: 1;
+  scrollbar-width: none;
+  /* scrollbar on webkit */
+  -ms-overflow-style: none;
+}
+.preset-chips::-webkit-scrollbar { display: none; }
+
+.preset-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+  background: var(--white);
+  color: var(--fg);
+  border: var(--border);
+  border-radius: 100px;
+  box-shadow: var(--shadow-sm);
+  transition: transform var(--press), box-shadow var(--press), background 0.12s ease;
+  flex-shrink: 0;
+}
+.preset-chip:active {
+  transform: translate(4px, 4px);
+  box-shadow: 0 0 0 var(--fg);
+}
+.preset-chip.is-active {
+  background: var(--violet);
+}
+.preset-chip.is-off {
+  background: var(--bg);
+}
+
+/* Delete X inside a chip — shown only on active chip */
+.preset-chip-del {
+  display: none;
+  background: none;
+  border: none;
+  padding: 0;
+  margin-left: 2px;
+  cursor: pointer;
+  color: var(--fg);
+  font-size: 14px;
+  line-height: 1;
+  font-weight: 900;
+}
+.preset-chip.is-active .preset-chip-del {
+  display: inline;
+}
+
+/* Add button */
+.preset-add-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  font-size: 22px;
+  font-weight: 700;
+  font-family: inherit;
+  background: var(--white);
+  color: var(--fg);
+  border: var(--border);
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: transform var(--press), box-shadow var(--press), background 0.12s ease;
+  flex-shrink: 0;
+}
+.preset-add-btn:hover { background: var(--green); }
+.preset-add-btn:active {
+  transform: translate(4px, 4px);
+  box-shadow: 0 0 0 var(--fg);
+}
+
+/* Create form */
+.preset-create-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--white);
+  border: var(--border);
+  border-radius: 16px;
+  padding: 14px 14px 12px;
+  box-shadow: var(--shadow-md);
+}
+
+.preset-name-input,
+.preset-prompt-input {
+  width: 100%;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  background: var(--bg);
+  color: var(--fg);
+  border: var(--border);
+  border-radius: 10px;
+  padding: 8px 12px;
+  resize: none;
+  outline: none;
+  transition: border-color 0.12s ease;
+}
+.preset-name-input:focus,
+.preset-prompt-input:focus {
+  border-color: var(--violet);
+}
+
+.preset-prompt-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+.preset-prompt-row .preset-prompt-input {
+  flex: 1;
+}
+
+.preset-dictate-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  height: 36px;
+  background: var(--white);
+  color: var(--fg);
+  border: var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: transform var(--press), box-shadow var(--press), background 0.12s ease;
+  padding: 0 8px;
+  flex-shrink: 0;
+}
+.preset-dictate-btn svg {
+  width: 16px;
+  height: 16px;
+}
+.preset-dictate-btn:hover { background: var(--violet); }
+.preset-dictate-btn:active {
+  transform: translate(4px, 4px);
+  box-shadow: 0 0 0 var(--fg);
+}
+.preset-dictate-btn.is-recording {
+  background: var(--red);
+  animation: pressDot 0.7s ease-in-out infinite alternate;
+}
+@keyframes pressDot {
+  from { opacity: 1; }
+  to   { opacity: 0.55; }
+}
+
+.preset-create-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.preset-save-btn,
+.preset-cancel-btn {
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  cursor: pointer;
+  border-radius: 10px;
+  padding: 8px 14px;
+  border: var(--border);
+  box-shadow: var(--shadow-sm);
+  transition: transform var(--press), box-shadow var(--press), background 0.12s ease;
+}
+.preset-save-btn {
+  background: var(--green);
+  color: var(--fg);
+}
+.preset-save-btn:active {
+  transform: translate(4px, 4px);
+  box-shadow: 0 0 0 var(--fg);
+}
+.preset-cancel-btn {
+  background: var(--white);
+  color: var(--fg);
+}
+.preset-cancel-btn:active {
+  transform: translate(4px, 4px);
+  box-shadow: 0 0 0 var(--fg);
+}
+
+/* Push #status up so it never overlaps the preset panel */
+#status.show {
+  bottom: max(env(safe-area-inset-bottom, 0px) + 120px, 136px);
+}

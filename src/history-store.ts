@@ -28,6 +28,8 @@ export interface HistoryClip {
   recordedAt: string
   costUsd: number
   ts: number
+  presetId?: string | null
+  rawText?: string | null
 }
 
 export interface AppendInput {
@@ -36,6 +38,8 @@ export interface AppendInput {
   recordedAt: string
   source: ClipSource
   costUsd: number
+  presetId?: string | null
+  rawText?: string | null
 }
 
 export interface ListOptions {
@@ -62,6 +66,8 @@ interface HistoryRow {
   recorded_at: string
   cost_usd: number
   ts: number
+  preset_id?: string | null
+  raw_text?: string | null
 }
 
 function rowToClip(r: HistoryRow): HistoryClip {
@@ -73,6 +79,8 @@ function rowToClip(r: HistoryRow): HistoryClip {
     recordedAt: r.recorded_at,
     costUsd: r.cost_usd,
     ts: r.ts,
+    presetId: r.preset_id ?? null,
+    rawText: r.raw_text ?? null,
   }
 }
 
@@ -88,9 +96,9 @@ export interface HistoryStore {
 }
 
 export function createHistoryStore(db: DB, now: () => number = Date.now): HistoryStore {
-  const insert = db.query<HistoryRow, [string, string, string, string, number, number]>(
-    `INSERT INTO history (user_id, text, source, recorded_at, cost_usd, ts)
-     VALUES (?, ?, ?, ?, ?, ?) RETURNING *`,
+  const insert = db.query<HistoryRow, [string, string, string, string, number, number, string | null, string | null]>(
+    `INSERT INTO history (user_id, text, source, recorded_at, cost_usd, ts, preset_id, raw_text)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
   )
   // Newest-first by the global seq (a strict total order that also matches
   // recordedAt order for normal use; seq tie-breaks identical timestamps).
@@ -122,6 +130,8 @@ export function createHistoryStore(db: DB, now: () => number = Date.now): Histor
         input.recordedAt,
         input.costUsd,
         now(),
+        input.presetId ?? null,
+        input.rawText ?? null,
       )
       return rowToClip(row as HistoryRow)
     },

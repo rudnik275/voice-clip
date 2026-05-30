@@ -1,6 +1,6 @@
 import OpenAI, { toFile } from 'openai'
 import { config } from './config'
-import type { Usage } from './pricing'
+import type { Usage, ChatUsage } from './pricing'
 
 const openai = new OpenAI({ apiKey: config.openaiApiKey })
 
@@ -35,4 +35,36 @@ export async function transcribeAudio(input: Uint8Array, filename: string): Prom
     }
   }
   return { text: transcription.text, usage }
+}
+
+// Post-process the raw transcript text using gpt-4o-mini with the given
+// system-instruction prompt from the user's active preset. This is a purely
+// text-to-text transformation — it never re-triggers audio recording, so
+// self-referential prompts (e.g. "transcribe this") are harmless.
+export interface PostProcessResult {
+  text: string
+  usage?: ChatUsage
+}
+
+export async function postProcessTranscript(
+  text: string,
+  presetPrompt: string,
+): Promise<PostProcessResult> {
+  const completion = await openai.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages: [
+      { role: 'system', content: presetPrompt },
+      { role: 'user', content: text },
+    ],
+  })
+
+  const content = completion.choices[0]?.message?.content ?? text
+  let usage: ChatUsage | undefined
+  if (completion.usage) {
+    usage = {
+      inputTokens: completion.usage.prompt_tokens,
+      outputTokens: completion.usage.completion_tokens,
+    }
+  }
+  return { text: content, usage }
 }

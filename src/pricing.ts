@@ -19,3 +19,23 @@ export function calcCostUsd(u: Usage): number {
     1_000_000
   )
 }
+
+// gpt-4o-mini chat pricing (USD per 1M tokens), as published by OpenAI.
+// Used for the post-processing preset second-pass call.
+const CHAT_MINI_PRICE_PER_MILLION = {
+  input: 0.15,
+  output: 0.60,
+}
+
+export interface ChatUsage {
+  inputTokens: number
+  outputTokens: number
+}
+
+export function calcChatCostUsd(u: ChatUsage): number {
+  return (
+    (u.inputTokens * CHAT_MINI_PRICE_PER_MILLION.input +
+      u.outputTokens * CHAT_MINI_PRICE_PER_MILLION.output) /
+    1_000_000
+  )
+}
