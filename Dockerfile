@@ -16,6 +16,11 @@ WORKDIR /app
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 COPY web ./web
+# The recorder store imports the framework-agnostic capture core (web/src/stores/
+# recorder.ts → ../../../core/*), so core/ must be present for `vite build` to
+# resolve those imports. (Runtime stage doesn't need it — it serves the bundled
+# web/dist/ and src/ has no core/ dependency.)
+COPY core ./core
 RUN bun run build:web
 
 FROM oven/bun:1-alpine AS runtime
