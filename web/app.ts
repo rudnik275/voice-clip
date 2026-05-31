@@ -14,6 +14,7 @@
 import { IS_TAURI, tauriRedirectToLogin, tauriSignOut } from './tauri-runtime'
 import {
   isMuted,
+  closeAudio,
   playCopy,
   playError,
   playModal,
@@ -788,7 +789,15 @@ function extForMime(mime: string): string {
 // captures silence. A fresh getUserMedia guarantees a live, unmuted track.
 async function ensureMic(): Promise<MediaStream> {
   if (micStream) for (const t of micStream.getTracks()) t.stop()
-  micStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+  // echoCancellation + noiseSuppression clean the capture for the STT.
+  // autoGainControl is OFF on purpose: it ramps gain up on quiet input, which
+  // lifts the noise floor past our absolute RMS thresholds (SILENCE_RMS_THRESHOLD
+  // / VOICE_RMS_THRESHOLD / DEAD_MIC_RMS) and defeats both the silence-guard
+  // (silence stops being rejected → wasted STT call + hallucinated text) and
+  // dead-mic detection. Don't flip it back to true without reworking the guard.
+  micStream = await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false },
+  })
   micSource = undefined
   return micStream
 }
@@ -811,15 +820,14 @@ function forceReleaseMic() {
   micSource = undefined
 }
 
-// ONE persistent AudioContext for the lifetime of the page. Creating and
-// closing a context per recording forces an iOS AVAudioSession category
-// switch on every start → audible click/artifact. Instead we create the
-// context once (lazily, inside the first user gesture) and reuse it across
-// recordings. iOS auto-suspends a persistent context between recordings, so
-// we always call resume() at the top of startMeters to re-arm it. The per-
-// recording nodes (MediaStreamAudioSourceNode + AnalyserNode) are still
-// created fresh each time because they are tied to the per-recording mic
-// stream — this keeps the voice meter alive every recording.
+// AudioContext lives ONLY for the duration of a recording. We used to keep
+// one persistent context alive across recordings (to dodge the iOS
+// AVAudioSession category-switch click on each start), but a persistent
+// context under the play-and-record category keeps the iOS audio session
+// alive even when the screen is locked — which surfaced a "Now Playing"
+// widget on the lock screen and held the mic indicator. We accept the small
+// start-of-record click as the trade-off for releasing the audio session the
+// moment a recording ends (see stopMeters → audioCtx.close()).
 function startMeters(s: MediaStream) {
   // Re-assert the iOS audio session category immediately before creating or
   // resuming the meter context. primeAudioSession() is idempotent and
@@ -965,9 +973,15 @@ function stopMeters() {
   }
   micSource = undefined
   analyser = undefined
-  // Do NOT close audioCtx here. Closing and recreating it per recording
-  // forces an iOS AVAudioSession category switch → audible click. Leave the
-  // context alive; it will be reused and resumed on the next startMeters().
+  // Close the meter AudioContext at the end of every recording so iOS
+  // releases the audio session slot. A persistent context under the
+  // play-and-record category keeps the session (and the lock-screen "Now
+  // Playing" widget + mic indicator) alive while idle. startMeters() lazily
+  // recreates the context on the next recording.
+  if (audioCtx) {
+    void audioCtx.close()
+    audioCtx = undefined
+  }
 }
 
 // The recurring "502 every few recordings" was NOT a tunnel flap — it was
@@ -1333,9 +1347,18 @@ document.addEventListener('visibilitychange', () => {
       return
     }
     // Idle: proactively release the mic stream so iOS doesn't play its
-    // "microphone in use changed" notification on the indicator handoff.
+    // "microphone in use changed" notification on the indicator handoff, and
+    // close BOTH audio contexts (UI-sound + any lingering meter context) so
+    // the iOS audio session fully releases — otherwise the lock screen shows a
+    // "Now Playing" widget and keeps the mic held. Both contexts are lazily
+    // recreated on the next user gesture.
     if (!recording && !transcribing) {
       releaseMic()
+      closeAudio()
+      if (audioCtx) {
+        void audioCtx.close()
+        audioCtx = undefined
+      }
     }
     return
   }
@@ -1598,7 +1621,10 @@ async function startDictate(): Promise<void> {
   dictateRecording = true
   presetDictateBtn.classList.add('is-recording')
   try {
-    dictateMicStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    // autoGainControl OFF — see ensureMic(): AGC breaks our RMS silence-guard.
+    dictateMicStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false },
+    })
     dictateChunks = []
     const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus'
       : MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4'

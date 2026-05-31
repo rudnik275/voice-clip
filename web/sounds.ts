@@ -62,6 +62,18 @@ export function primeAudioSession(): void {
   if (nav.audioSession) nav.audioSession.type = 'play-and-record'
 }
 
+// Fully close + drop the UI-sound AudioContext. Called when the page goes
+// idle in the background (screen lock): a lingering context under the iOS
+// play-and-record category keeps the audio session alive, which surfaces a
+// "Now Playing" widget on the lock screen and holds the mic indicator. The
+// next user gesture lazily recreates it via ctx()/unlockAudio().
+export function closeAudio(): void {
+  if (_ctx) {
+    void _ctx.close()
+    _ctx = null
+  }
+}
+
 // Eagerly create + resume the AudioContext from a user-gesture callback
 // (touchstart on the rec button, etc.) so the FIRST playStartRec() inside
 // the subsequent click handler isn't silent because iOS hadn't unlocked

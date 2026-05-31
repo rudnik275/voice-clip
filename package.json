@@ -9,7 +9,7 @@
     "dev:web": "vite --config web/vite.config.ts",
     "build:web": "vite build --config web/vite.config.ts",
     "test": "bun test",
-    "typecheck": "bun x tsc --noEmit && bun x vue-tsc --noEmit -p web"
+    "typecheck": "bun x tsc --noEmit && bun x vue-tsc --noEmit -p web && bun x tsc --noEmit -p core"
   },
   "devDependencies": {
     "@types/bun": "latest",
