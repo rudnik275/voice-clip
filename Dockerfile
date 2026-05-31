@@ -2,10 +2,21 @@
 # Multi-stage Bun build for the voice-clip server.
 # TLS terminates at Cloudflare Tunnel; container always serves plain HTTP.
 
+# Runtime deps only (no dev deps) — what the server needs at boot.
 FROM oven/bun:1-alpine AS deps
 WORKDIR /app
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile --production
+
+# Build the Vue SPA with Vite (needs dev deps: vite, vue-tsc, plugin-vue).
+# Output is web/dist/ with content-hashed assets, served statically by the
+# server at runtime. See docs/adr/0006-frontend-vue-spa-vite.md.
+FROM oven/bun:1-alpine AS webbuild
+WORKDIR /app
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile
+COPY web ./web
+RUN bun run build:web
 
 FROM oven/bun:1-alpine AS runtime
 WORKDIR /app
@@ -20,6 +31,8 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY package.json tsconfig.json ./
 COPY src ./src
 COPY web ./web
+# Overlay the Vite-built SPA (web/dist/) produced by the webbuild stage.
+COPY --from=webbuild /app/web/dist ./web/dist
 
 RUN mkdir -p /data && chown -R app:app /app /data
 

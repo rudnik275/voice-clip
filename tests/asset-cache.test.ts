@@ -1,101 +1,114 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdtemp, rm } from 'node:fs/promises'
+// Tests the static-serving contract for the Vite-built SPA (issue #100):
+//   - `/` returns the Vite-built index.html (no-store, content-hashed
+//      asset URLs inside it).
+//   - `/assets/*` serves content-hashed JS/CSS with immutable caching.
+//   - `/manifest.webmanifest` + `/icons/*` keep working (PWA install).
+//   - The old `/app.ts`, `/sw.js`, `/style.css` routes are gone — no SW.
+//
+// These assume `web/dist/` exists (produced by `bun run build:web`). The
+// Docker image bakes it via a `vite build` stage; locally CI builds it
+// before `bun test`. If dist/ is missing the SPA-shell tests are skipped
+// so the rest of the suite still runs.
+import { test, expect, beforeAll, afterAll } from 'bun:test'
+import { startServer, type RunningServer } from '../src/server'
+import { mkdtempSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { startServer, type ServerDeps } from '../src/server'
 
-// Regression: Cloudflare's default 4h static cache served a STALE
-// /style.css against fresh HTML after a deploy → broken layout (white
-// pause button, invisible loader). Fix = content-versioned asset URLs
-// (/style.css?v=hash, /app.ts?v=hash) cached `immutable`, HTML `no-store`.
+const DIST_DIR = join(import.meta.dir, '..', 'web', 'dist')
+const HAS_DIST = existsSync(join(DIST_DIR, 'index.html'))
 
-describe('asset cache busting', () => {
-  let dir: string
-  let server: Awaited<ReturnType<typeof startServer>>
-  let baseUrl: string
+let server: RunningServer
+let baseUrl: string
 
-  beforeEach(async () => {
-    dir = await mkdtemp(join(tmpdir(), 'voice-clip-asset-'))
-    const deps: ServerDeps = { dataDir: dir, port: 0, useTls: false }
-    server = await startServer(deps)
-    baseUrl = `http://localhost:${server.port}`
-  })
+beforeAll(async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'voice-clip-asset-'))
+  server = await startServer({ dataDir, port: 0, useTls: false })
+  baseUrl = `http://localhost:${server.port}`
+})
 
-  afterEach(async () => {
-    if (server) server.stop()
-    await rm(dir, { recursive: true, force: true })
-  })
+afterAll(() => {
+  server.stop()
+})
 
-  test('/style.css is served immutable + long max-age', async () => {
-    const r = await fetch(`${baseUrl}/style.css`)
-    expect(r.status).toBe(200)
-    expect(r.headers.get('content-type')).toContain('text/css')
-    const cc = r.headers.get('cache-control') ?? ''
-    expect(cc).toContain('immutable')
-    expect(cc).toContain('max-age=31536000')
-  })
+test('GET / serves the Vite SPA shell as HTML with no-store', async () => {
+  const res = await fetch(`${baseUrl}/`)
+  if (!HAS_DIST) {
+    // No build present → server returns a clear 503, not a stale shell.
+    expect(res.status).toBe(503)
+    return
+  }
+  expect(res.status).toBe(200)
+  expect(res.headers.get('content-type')).toContain('text/html')
+  // index.html carries the hashed asset URLs, so it must never be cached.
+  expect(res.headers.get('cache-control')).toContain('no-store')
+})
 
-  test('/app.ts is served immutable + long max-age', async () => {
-    const r = await fetch(`${baseUrl}/app.ts`)
-    expect(r.status).toBe(200)
-    expect(r.headers.get('content-type')).toContain('javascript')
-    const cc = r.headers.get('cache-control') ?? ''
-    expect(cc).toContain('immutable')
-    expect(cc).toContain('max-age=31536000')
-  })
+test('GET / references content-hashed /assets bundles and mounts #app', async () => {
+  if (!HAS_DIST) return
+  const res = await fetch(`${baseUrl}/`)
+  const html = await res.text()
+  expect(html).toContain('id="app"')
+  // Vite injects hashed asset URLs under /assets/.
+  expect(html).toMatch(/\/assets\/[^"']+\.js/)
+  // No service worker registration in the SPA shell.
+  expect(html).not.toContain('serviceWorker.register')
+  expect(html).not.toContain('/sw.js')
+})
 
-  test('a versioned asset URL still routes (query ignored)', async () => {
-    const r = await fetch(`${baseUrl}/style.css?v=deadbeef00`)
-    expect(r.status).toBe(200)
-    expect(r.headers.get('content-type')).toContain('text/css')
-  })
+test('GET /assets/* serves the hashed JS bundle with immutable caching', async () => {
+  if (!HAS_DIST) return
+  const html = await (await fetch(`${baseUrl}/`)).text()
+  const match = html.match(/\/assets\/[^"']+\.js/)
+  expect(match).not.toBeNull()
+  const res = await fetch(`${baseUrl}${match![0]}`)
+  expect(res.status).toBe(200)
+  expect(res.headers.get('content-type')).toContain('javascript')
+  expect(res.headers.get('cache-control')).toContain('immutable')
+})
 
-  test('HTML is no-store and references versioned assets only', async () => {
-    // `/` always returns the static home shell now (auth is resolved
-    // client-side via /me — see docs/adr/0001-pwa-boot-architecture.md).
-    const r = await fetch(`${baseUrl}/`)
-    expect(r.status).toBe(200)
-    expect(r.headers.get('cache-control')).toBe('no-store')
+test('GET /assets/* serves the hashed CSS with immutable caching', async () => {
+  if (!HAS_DIST) return
+  const html = await (await fetch(`${baseUrl}/`)).text()
+  const match = html.match(/\/assets\/[^"']+\.css/)
+  expect(match).not.toBeNull()
+  const res = await fetch(`${baseUrl}${match![0]}`)
+  expect(res.status).toBe(200)
+  expect(res.headers.get('content-type')).toContain('text/css')
+  expect(res.headers.get('cache-control')).toContain('immutable')
+})
 
-    const html = await r.text()
-    // versioned reference present…
-    const m = html.match(/\/style\.css\?v=([a-f0-9]{10})"/)
-    expect(m).not.toBeNull()
-    // …and NO bare /style.css" (which Cloudflare would cache stale)
-    expect(html).not.toContain('href="/style.css"')
-  })
+test('bundled CSS carries the neo-brutalism design tokens (style.css 1:1)', async () => {
+  if (!HAS_DIST) return
+  const html = await (await fetch(`${baseUrl}/`)).text()
+  const match = html.match(/\/assets\/[^"']+\.css/)
+  const css = await (await fetch(`${baseUrl}${match![0]}`)).text()
+  expect(css).toContain('--bg')
+  expect(css).toContain('--red')
+})
 
-  test('/sw.js is served with version stamped + no-cache + service-worker-allowed', async () => {
-    const r = await fetch(`${baseUrl}/sw.js`)
-    expect(r.status).toBe(200)
-    expect(r.headers.get('content-type')).toContain('javascript')
-    // Must re-validate so updates propagate; the body changes whenever
-    // ASSET_VER changes, which the browser detects byte-for-byte.
-    expect(r.headers.get('cache-control')).toBe('no-cache')
-    // Required for the SW to control the entire origin.
-    expect(r.headers.get('service-worker-allowed')).toBe('/')
-    const body = await r.text()
-    // The build-time __ASSET_VER__ placeholder is replaced with the
-    // real 10-char hex hash, baked into the VERSION constant.
-    expect(body).not.toContain('__ASSET_VER__')
-    expect(body).toMatch(/const VERSION = '[a-f0-9]{10}'/)
-  })
+test('GET /manifest.webmanifest is served (PWA install)', async () => {
+  const res = await fetch(`${baseUrl}/manifest.webmanifest`)
+  expect(res.status).toBe(200)
+  expect(res.headers.get('content-type')).toContain('manifest')
+})
 
-  test('home shell preloads the JS bundle (modulepreload) and registers the SW', async () => {
-    const r = await fetch(`${baseUrl}/`)
-    const html = await r.text()
-    // Browser starts fetching app.ts in parallel with HTML parsing.
-    expect(html).toMatch(/<link rel="modulepreload" href="\/app\.ts[^"]*"\s*\/?>/)
-    // Inline registration so we don't wait for the bundle to parse.
-    expect(html).toContain("navigator.serviceWorker.register('/sw.js')")
-  })
+test('GET /icons/icon-192.png is served with immutable cache headers', async () => {
+  const res = await fetch(`${baseUrl}/icons/icon-192.png`)
+  expect(res.status).toBe(200)
+  expect(res.headers.get('content-type')).toContain('image/png')
+  expect(res.headers.get('cache-control')).toContain('immutable')
+})
 
-  test('asset version matches the served bundle (stable hash)', async () => {
-    const home = await fetch(`${baseUrl}/`).then((r) => r.text())
-    const ver = home.match(/\/style\.css\?v=([a-f0-9]{10})"/)?.[1]
-    expect(ver).toBeTruthy()
-    // The token is a content hash, so re-reading it is identical.
-    const home2 = await fetch(`${baseUrl}/`).then((r) => r.text())
-    expect(home2.match(/\/style\.css\?v=([a-f0-9]{10})"/)?.[1]).toBe(ver)
-  })
+test('legacy /app.ts and /sw.js routes are gone (no service worker)', async () => {
+  const appTs = await fetch(`${baseUrl}/app.ts`)
+  expect(appTs.status).toBe(404)
+  const sw = await fetch(`${baseUrl}/sw.js`)
+  expect(sw.status).toBe(404)
+})
+
+test('dist index.html does not register a service worker', () => {
+  if (!HAS_DIST) return
+  const html = readFileSync(join(DIST_DIR, 'index.html'), 'utf8')
+  expect(html).not.toContain('serviceWorker.register')
 })
