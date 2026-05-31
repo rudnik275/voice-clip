@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useSessionStore, type Me } from '../stores/session'
-import { isMuted, setMuted, playModal } from '../../sounds'
+import { isMuted, setMuted, playModal, playCopy } from '../../sounds'
+import { IS_TAURI, tauriSignOut } from '../../tauri-runtime'
+import { fetchDevices, revokeDevice, generateInvite, type DeviceRow } from '../api/devices'
 
 // ---- props / emits ----
 const props = defineProps<{ open: boolean }>()
@@ -97,6 +99,13 @@ const isExhausted = computed<boolean>(() => {
 // ---- sign out ----
 async function signOut() {
   if (!confirm('Sign out?')) return
+  if (IS_TAURI) {
+    // Tauri owns sign-out: tear down SSE worker + wipe Keychain. The Rust
+    // `sign_out` command also flips the webview back to the pairing view.
+    emit('close')
+    await tauriSignOut()
+    return
+  }
   try {
     await fetch('/logout', { method: 'POST', credentials: 'same-origin' })
   } finally {
@@ -123,9 +132,131 @@ watch(
     if (val) {
       muted.value = isMuted() // refresh from localStorage on each open
       playModal()
+      void loadDevices()
     }
   },
 )
+
+// ---- paired devices ----
+
+// Is this a Mac browser (not Tauri)? Drives download CTA visibility.
+// Mirrors isMacBrowser() in old app.ts.
+function isMacBrowser(): boolean {
+  if (IS_TAURI) return false
+  const ua = navigator.userAgent
+  if (/iPhone|iPad|iPod|Android/i.test(ua)) return false
+  return /Mac/i.test(navigator.platform || ua)
+}
+
+const SHOW_MAC_CTA = isMacBrowser()
+
+const devices = ref<DeviceRow[]>([])
+const devicesLoaded = ref(false)
+const devicesError = ref(false)
+
+async function loadDevices(): Promise<void> {
+  devicesLoaded.value = false
+  devicesError.value = false
+  try {
+    devices.value = await fetchDevices()
+    devicesLoaded.value = true
+  } catch {
+    devicesError.value = true
+    devicesLoaded.value = true
+  }
+}
+
+// Download CTA visibility mirrors updateDownloadCta() in old app.ts:
+//   - Not Mac browser (Tauri / mobile / etc.) → both hidden
+//   - Mac browser, load failed → both hidden (don't guess)
+//   - Mac browser, 0 paired → card shown
+//   - Mac browser, ≥1 paired → compact shown
+const showDownloadCtaCard = computed<boolean>(() => {
+  if (!SHOW_MAC_CTA || !devicesLoaded.value || devicesError.value) return false
+  return devices.value.length === 0
+})
+
+const showDownloadCtaCompact = computed<boolean>(() => {
+  if (!SHOW_MAC_CTA || !devicesLoaded.value || devicesError.value) return false
+  return devices.value.length > 0
+})
+
+const revoking = ref<Set<string>>(new Set())
+
+async function handleRevoke(d: DeviceRow): Promise<void> {
+  if (!confirm(`Revoke "${d.label ?? 'Unnamed Mac'}"? It will stop receiving clips.`)) return
+  if (revoking.value.has(d.id)) return
+  revoking.value = new Set([...revoking.value, d.id])
+  try {
+    await revokeDevice(d.id)
+    devices.value = devices.value.filter((x) => x.id !== d.id)
+  } catch {
+    // revoke failed — leave device in list
+  } finally {
+    const next = new Set(revoking.value)
+    next.delete(d.id)
+    revoking.value = next
+  }
+}
+
+// ---- relative time (mirrors fmtRelative in old app.ts) ----
+function fmtRelative(ms: number): string {
+  const diff = Date.now() - ms
+  if (!Number.isFinite(diff) || diff < 0) return 'just now'
+  const sec = Math.floor(diff / 1000)
+  if (sec < 45) return 'just now'
+  const min = Math.floor(sec / 60)
+  if (min < 60) return `${min}m ago`
+  const hr = Math.floor(min / 60)
+  if (hr < 24) return `${hr}h ago`
+  const day = Math.floor(hr / 24)
+  if (day < 30) return `${day}d ago`
+  return new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+}
+
+// ---- owner invite generation ----
+
+const isOwner = computed<boolean>(() => session.me?.is_owner ?? false)
+
+const inviteHint = ref('One-time, copied to clipboard')
+const inviteGenerating = ref(false)
+const _inviteResetTimer = ref<ReturnType<typeof setTimeout> | null>(null)
+
+async function handleGenerateInvite(): Promise<void> {
+  if (inviteGenerating.value) return
+  inviteGenerating.value = true
+  const prev = inviteHint.value
+  inviteHint.value = 'Generating…'
+  if (_inviteResetTimer.value !== null) {
+    clearTimeout(_inviteResetTimer.value)
+    _inviteResetTimer.value = null
+  }
+  try {
+    const result = await generateInvite()
+    try {
+      await navigator.clipboard.writeText(result.url)
+      playCopy()
+      inviteHint.value = 'Copied to clipboard'
+    } catch {
+      // Clipboard API blocked — show URL so the user can long-press copy.
+      inviteHint.value = result.url
+    }
+  } catch {
+    inviteHint.value = 'Failed — check your connection'
+  } finally {
+    inviteGenerating.value = false
+    _inviteResetTimer.value = setTimeout(() => {
+      inviteHint.value = prev
+      _inviteResetTimer.value = null
+    }, 4000)
+  }
+}
+
+// ---- Tauri pairing splash (consumed from tauri-runtime.ts) ----
+// IS_TAURI is already handled by tauri-runtime.ts on boot (it wires the
+// #tauri-pair overlay and the `paired` event listener). We expose it here
+// only so the template can hide the download CTA inside Tauri.
+const isTauri = IS_TAURI
 </script>
 
 <template>
@@ -168,12 +299,85 @@ watch(
           <div class="device-revoke">{{ muted ? 'Unmute' : 'Mute' }}</div>
         </button>
 
-        <!-- Paired devices section — placeholder for #105 -->
+        <!-- Paired devices section (#105) -->
         <h3 class="profile-section-title">Paired devices</h3>
         <div class="profile-devices">
-          <!-- devices list is added in #105 -->
-          <p class="profile-empty">No paired Macs yet</p>
+          <!-- Loading / error state -->
+          <p v-if="!devicesLoaded" class="profile-empty">Loading…</p>
+          <p v-else-if="devicesError" class="profile-empty">Failed to load devices</p>
+
+          <!-- Empty state -->
+          <p v-else-if="devices.length === 0" class="profile-empty">No paired Macs yet</p>
+
+          <!-- Device rows — same class/structure as old app.ts renderDevice() -->
+          <template v-else>
+            <div
+              v-for="d in devices"
+              :key="d.id"
+              class="device-item"
+              :data-id="d.id"
+            >
+              <div class="device-meta">
+                <div class="device-label">{{ d.label ?? 'Unnamed Mac' }}</div>
+                <div class="device-seen">Last seen {{ fmtRelative(d.last_seen_at) }}</div>
+              </div>
+              <button
+                type="button"
+                class="device-revoke"
+                :disabled="revoking.has(d.id)"
+                @click="handleRevoke(d)"
+              >
+                {{ revoking.has(d.id) ? '…' : 'Revoke' }}
+              </button>
+            </div>
+          </template>
         </div>
+
+        <!-- Download macOS app CTA (ADR 0005). Hidden by default.
+             - Non-Mac or Tauri → both hidden
+             - Mac browser, 0 paired → card (with blurb)
+             - Mac browser, ≥1 paired → compact (one-liner)
+        -->
+        <a
+          class="download-cta-card"
+          href="/download/latest"
+          :hidden="!showDownloadCtaCard"
+        >
+          <span class="download-cta-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+                 stroke-linecap="round" stroke-linejoin="round">
+              <rect x="2" y="3" width="20" height="14" rx="2" />
+              <path d="M8 21h8M12 17v4" />
+            </svg>
+          </span>
+          <span class="download-cta-title">Download Voice Clip for macOS</span>
+          <span class="download-cta-sub">Receive clips from any device even when your browser is closed.</span>
+        </a>
+        <a
+          class="download-cta-compact"
+          href="/download/latest"
+          :hidden="!showDownloadCtaCompact"
+        >
+          Install on another Mac →
+        </a>
+
+        <!-- Owner-only invite generator (#105).
+             Hidden for non-owners; visible only when is_owner=true from /me. -->
+        <template v-if="isOwner">
+          <h3 class="profile-section-title">Invite a friend</h3>
+          <button
+            class="device-item"
+            type="button"
+            :disabled="inviteGenerating"
+            @click="handleGenerateInvite"
+          >
+            <div class="device-meta">
+              <div class="device-label">Generate invite link</div>
+              <div class="device-seen">{{ inviteHint }}</div>
+            </div>
+            <div class="device-revoke">Generate</div>
+          </button>
+        </template>
 
         <div class="profile-version">voice-clip</div>
       </div>
