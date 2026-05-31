@@ -7,7 +7,7 @@
     "start": "bun run src/index.ts",
     "dev": "bun --watch src/index.ts",
     "test": "bun test",
-    "typecheck": "bun x tsc --noEmit && bun x tsc --noEmit -p web"
+    "typecheck": "bun x tsc --noEmit && bun x tsc --noEmit -p web && bun x tsc --noEmit -p core"
   },
   "devDependencies": {
     "@types/bun": "latest",
