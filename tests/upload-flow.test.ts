@@ -201,13 +201,12 @@ describe('upload flow: /upload + /history + /cost', () => {
     expect(after.user).toBeCloseTo(before.user, 8)
   })
 
-  test('GET /app.ts serves transpiled JS (module script)', async () => {
+  test('legacy /app.ts route is gone (SPA bundles live under /assets, built by Vite)', async () => {
+    // The boot-time Bun.build(app.ts) serving was removed in #100 — the Vue
+    // SPA is built ahead of time by `vite build` and served from web/dist/
+    // under content-hashed /assets/* URLs. /app.ts no longer routes.
     await start()
     const r = await fetch(`${baseUrl}/app.ts`)
-    expect(r.status).toBe(200)
-    expect(r.headers.get('content-type')).toContain('javascript')
-    const js = await r.text()
-    // Transpiled: no TS type annotations should survive.
-    expect(js.length).toBeGreaterThan(0)
+    expect(r.status).toBe(404)
   })
 })

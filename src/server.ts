@@ -1,19 +1,23 @@
 // Bun server — foundation slice (v2 #2).
 //
-// Route map:
+// Route map (static/auth subset):
 //   GET  /version              → plain text APP_VERSION
-//   GET  /                     → home.html (authed) | login.html (anon)
-//   GET  /style.css            → static asset
+//   GET  /                     → web/dist/index.html (Vite-built SPA shell)
+//   GET  /assets/*             → web/dist/assets/* (content-hashed, immutable)
 //   GET  /manifest.webmanifest → static asset
+//   GET  /icons/*              → static PWA icons (allowlisted filenames)
+//   GET  /login                → server-rendered sign-in page
 //   GET  /auth/google/start    → 302 to Google + set oauth_state cookie
 //   GET  /auth/google/callback → token-exchange + session cookie + 302 /
 //   POST /logout               → delete session row + clear cookie
 //   GET  /me                   → 200 { user } | 401
 //
-// The route table is intentionally minimal — slice #3 adds /upload + history.
+// The SPA is built ahead of time by `vite build` → web/dist/. The old
+// boot-time Bun.build(app.ts) + manual ASSET_VER hashing are gone; Vite
+// content-hashes assets. See docs/adr/0006-frontend-vue-spa-vite.md.
 
 import { join } from 'node:path'
-import { randomBytes, createHash } from 'node:crypto'
+import { randomBytes } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 
 import { openDb, type DB } from './db'
@@ -287,14 +291,15 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
   const desktopRedirectUri = oauthReady ? `${publicBase}/desktop/auth/complete` : ''
 
   // ----- prebuilt static pages -----
-  const loginTplRaw = (await readWebFile('login.html')).replace('__APP_VERSION__', APP_VERSION)
-  const accessDeniedTplRaw = await readWebFile('access-denied.html')
+  // Server-rendered standalone pages (login / pro / welcome / access-denied)
+  // are self-contained: each ships its own inline <style>, so they don't
+  // depend on the Vite-bundled SPA assets. Only __APP_VERSION__ / __EMAIL__
+  // placeholders get substituted here.
+  const loginHtml = (await readWebFile('login.html')).replace('__APP_VERSION__', APP_VERSION)
+  const accessDeniedTpl = await readWebFile('access-denied.html')
   const proHtml = await readWebFile('pro.html')
   const welcomeHtml = (await readWebFile('welcome.html')).replace('__APP_VERSION__', APP_VERSION)
-  const homeTplRaw = await readWebFile('home.html')
-  const styleCss = await readWebFile('style.css')
-  const manifestRaw = await readWebFile('manifest.webmanifest')
-  const swJsRaw = await readWebFile('sw.js')
+  const manifestJson = await readWebFile('manifest.webmanifest')
 
   // PWA icons. Read at boot so the route handlers can hand back Buffer
   // bytes directly — small files, no need for streaming. Filenames are
@@ -313,51 +318,60 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
     }
   }
 
-  // Bundle + transpile the browser entrypoint once at boot. Bun strips TS
-  // types and produces an ES module the browser can load directly via
-  // <script type="module" src="/app.ts">.
-  const appBuild = await Bun.build({
-    entrypoints: [join(WEB_DIR, 'app.ts')],
-    target: 'browser',
-    minify: true,
-  })
-  const appJs = appBuild.success ? await appBuild.outputs[0]!.text() : ''
-  if (!appBuild.success) {
-    // Surface build failures loudly — a broken bundle means a dead PWA.
-    console.error('web/app.ts build failed:', appBuild.logs)
+  // The SPA shell + its hashed assets are produced ahead of time by
+  // `vite build` (web/dist/). The server serves that directory statically;
+  // index.html is the entry at `/`. There is no boot-time Bun.build and no
+  // manual ASSET_VER hashing anymore — Vite content-hashes every asset, so
+  // /assets/* can be cached immutably while index.html stays no-store.
+  // See docs/adr/0006-frontend-vue-spa-vite.md.
+  const DIST_DIR = join(WEB_DIR, 'dist')
+  let distIndexHtml: string | null = null
+  try {
+    distIndexHtml = await readFile(join(DIST_DIR, 'index.html'), 'utf8')
+  } catch {
+    // No dist/ build present (e.g. running the server before `vite build`).
+    // `/` then returns a clear 503 so the misconfiguration is obvious
+    // rather than a confusing 404. In prod the Docker image always bakes
+    // dist/ via a `vite build` stage.
+    console.error(
+      'web/dist/index.html missing — run `bun run build:web` before starting the server',
+    )
   }
 
-  // Versioned asset URLs = a content hash that covers every byte the SW
-  // precaches: CSS, JS bundle, SW file itself, plus APP_VERSION (which
-  // gets stamped into the HTML at render time). Any change → new hash →
-  // new asset URLs AND new SW byte content → standard SW update flow
-  // installs the new version, which activates the next time all PWA
-  // clients close (= next foreground on iOS). HTML is served `no-store`
-  // so a deploy is never blocked by a stale Cloudflare/edge HTML cache;
-  // CSS and JS are `immutable` because their URL changes per hash.
-  const verHash = createHash('sha1')
-    .update(styleCss)
-    .update(appJs)
-    .update(swJsRaw)
-    .update(APP_VERSION)
-  for (const name of Object.keys(ICONS).sort()) verHash.update(ICONS[name]!.bytes)
-  const ASSET_VER = verHash.digest('hex').slice(0, 10)
-  const withAssetVer = (html: string): string =>
-    html
-      .replaceAll('/style.css"', `/style.css?v=${ASSET_VER}"`)
-      .replaceAll('/app.ts"', `/app.ts?v=${ASSET_VER}"`)
-      // Icon URLs in HTML <link> tags and inside the manifest JSON.
-      .replaceAll('/icons/icon-192.png"', `/icons/icon-192.png?v=${ASSET_VER}"`)
-      .replaceAll('/icons/icon-512.png"', `/icons/icon-512.png?v=${ASSET_VER}"`)
-      .replaceAll('/icons/apple-touch-icon.png"', `/icons/apple-touch-icon.png?v=${ASSET_VER}"`)
-      .replaceAll('/icons/favicon-32.png"', `/icons/favicon-32.png?v=${ASSET_VER}"`)
-      .replaceAll('/icons/voice-clip-mark.svg"', `/icons/voice-clip-mark.svg?v=${ASSET_VER}"`)
+  // Content-type lookup for the handful of extensions Vite emits into
+  // web/dist/. Anything else is rejected (we never serve arbitrary types).
+  const DIST_MIME: Record<string, string> = {
+    '.js': 'text/javascript; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+    '.svg': 'image/svg+xml',
+    '.png': 'image/png',
+    '.json': 'application/json; charset=utf-8',
+    '.woff2': 'font/woff2',
+    '.woff': 'font/woff',
+    '.ico': 'image/x-icon',
+    '.map': 'application/json; charset=utf-8',
+  }
 
-  const loginHtml = withAssetVer(loginTplRaw)
-  const homeHtmlStatic = withAssetVer(homeTplRaw).replace('__APP_VERSION__', APP_VERSION)
-  const accessDeniedTpl = withAssetVer(accessDeniedTplRaw)
-  const manifestJson = withAssetVer(manifestRaw)
-  const swJs = swJsRaw.replaceAll('__ASSET_VER__', ASSET_VER)
+  // Serve a content-hashed asset from web/dist/. Path traversal is blocked
+  // by resolving against DIST_DIR and rejecting anything that escapes it.
+  // Hashed filenames ⇒ immutable caching is safe.
+  async function serveDistAsset(pathname: string): Promise<Response | null> {
+    const rel = pathname.replace(/^\/+/, '')
+    const resolved = join(DIST_DIR, rel)
+    if (resolved !== DIST_DIR && !resolved.startsWith(DIST_DIR + '/')) return null
+    const ext = rel.slice(rel.lastIndexOf('.'))
+    const mime = DIST_MIME[ext]
+    if (!mime) return null
+    const file = Bun.file(resolved)
+    if (!(await file.exists())) return null
+    return new Response(file, {
+      status: 200,
+      headers: {
+        'content-type': mime,
+        'cache-control': 'public, max-age=31536000, immutable',
+      },
+    })
+  }
 
   function renderAccessDenied(email: string): string {
     return accessDeniedTpl
@@ -471,16 +485,6 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
           headers: { 'content-type': 'text/plain; charset=utf-8' },
         })
       }
-      if (method === 'GET' && pathname === '/style.css') {
-        return new Response(styleCss, {
-          status: 200,
-          headers: {
-            'content-type': 'text/css; charset=utf-8',
-            // URL is content-versioned (?v=hash) → safe to cache forever.
-            'cache-control': 'public, max-age=31536000, immutable',
-          },
-        })
-      }
       if (method === 'GET' && pathname === '/manifest.webmanifest') {
         return new Response(manifestJson, {
           status: 200,
@@ -488,9 +492,9 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
         })
       }
       // Icon route: explicit allowlist by filename — never reads arbitrary
-      // paths from disk. The bytes are loaded at boot; URLs are versioned
-      // with ?v=hash so a redesign rolls cleanly without phones holding
-      // a stale icon in their home-screen cache.
+      // paths from disk. The bytes are loaded at boot. Icons are stable
+      // (referenced from the manifest + index.html by fixed path) so they
+      // are cached immutably; a redesign ships under a new filename.
       if (method === 'GET' && pathname.startsWith('/icons/')) {
         const name = pathname.slice('/icons/'.length)
         const icon = ICONS[name]
@@ -504,31 +508,11 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
           })
         }
       }
-      if (method === 'GET' && pathname === '/app.ts') {
-        return new Response(appJs, {
-          status: 200,
-          headers: {
-            'content-type': 'text/javascript; charset=utf-8',
-            // URL is content-versioned (?v=hash) → safe to cache forever.
-            'cache-control': 'public, max-age=31536000, immutable',
-          },
-        })
-      }
-      // The service worker MUST be served from the site root (its scope
-      // is `/`) and the browser re-fetches it on every navigation to
-      // detect updates. We serve it with `no-cache` so the browser
-      // always re-validates; the bytes themselves change whenever
-      // ASSET_VER changes, triggering the standard install/activate
-      // lifecycle. See docs/adr/0001-pwa-boot-architecture.md.
-      if (method === 'GET' && pathname === '/sw.js') {
-        return new Response(swJs, {
-          status: 200,
-          headers: {
-            'content-type': 'text/javascript; charset=utf-8',
-            'cache-control': 'no-cache',
-            'service-worker-allowed': '/',
-          },
-        })
+      // Vite-built SPA assets (web/dist/assets/*.{js,css,…}). Filenames are
+      // content-hashed by Vite, so they are safe to cache immutably.
+      if (method === 'GET' && pathname.startsWith('/assets/')) {
+        const asset = await serveDistAsset(pathname)
+        if (asset) return asset
       }
 
       // ---- /api/errors ---- (client error reporting, no auth)
@@ -1499,14 +1483,21 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
       }
 
       // ---- / (root) ----
-      // The home shell is static and identical for every user. Auth is
-      // resolved client-side by app.ts via /me — on 401 the client
-      // redirects to /login. This lets the service worker precache `/`
-      // as one immutable blob and serve it offline-first. See
-      // docs/adr/0001-pwa-boot-architecture.md for the full design.
+      // The SPA shell (web/dist/index.html, built by `vite build`) is static
+      // and identical for every user. Auth is resolved client-side by the
+      // Vue app via /me — on 401 the client redirects to /login. index.html
+      // is served `no-store` (htmlResponse) so a deploy is never pinned to a
+      // stale shell; the hashed /assets/* it references are immutable.
+      // See docs/adr/0006-frontend-vue-spa-vite.md.
       if (pathname === '/') {
         if (method !== 'GET') return new Response('Method Not Allowed', { status: 405 })
-        return htmlResponse(homeHtmlStatic)
+        if (!distIndexHtml) {
+          return new Response(
+            'SPA build missing — run `bun run build:web`',
+            { status: 503, headers: { 'content-type': 'text/plain; charset=utf-8' } },
+          )
+        }
+        return htmlResponse(distIndexHtml)
       }
       // Dedicated login URL. Anonymous users land here via the client's
       // 401-redirect; the OAuth start link on this page kicks off the
