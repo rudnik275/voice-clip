@@ -21,6 +21,10 @@ COPY web ./web
 # resolve those imports. (Runtime stage doesn't need it — it serves the bundled
 # web/dist/ and src/ has no core/ dependency.)
 COPY core ./core
+# Root tsconfig.json is required at build time: rolldown-vite's transform plugin
+# resolves the nearest tsconfig from /app, and core/tsconfig.json extends
+# ../tsconfig.json. Without it the build fails "Tsconfig not found /app/tsconfig.json".
+COPY tsconfig.json ./
 RUN bun run build:web
 
 FROM oven/bun:1-alpine AS runtime
