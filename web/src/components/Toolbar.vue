@@ -1,9 +1,16 @@
 <script setup lang="ts">
+import { ref } from 'vue'
 import UserPill from './UserPill.vue'
+import ProfileModal from './ProfileModal.vue'
 
-// Topbar: history button + user pill. Same markup/classes as the old
-// home.html .topbar. Buttons are stubs in this foundation slice; later
-// slices (#103 history, #104 profile) wire the handlers.
+// Topbar: history button + user pill. Profile modal state lives here so
+// UserPill and ProfileModal are siblings (#104). History modal (#103) will
+// use the same pattern when that slice lands.
+
+// ---- profile modal state (#104) ----
+const profileOpen = ref(false)
+function openProfile() { profileOpen.value = true }
+function closeProfile() { profileOpen.value = false }
 </script>
 
 <template>
@@ -16,6 +23,11 @@ import UserPill from './UserPill.vue'
         <path d="M12 7v5l3 2" />
       </svg>
     </button>
-    <UserPill />
+    <UserPill @open-profile="openProfile" />
   </div>
+
+  <!-- Profile modal — rendered outside the topbar flex context but still
+       inside Toolbar so the open/close state stays local to this component.
+       (#104) -->
+  <ProfileModal :open="profileOpen" @close="closeProfile" />
 </template>
