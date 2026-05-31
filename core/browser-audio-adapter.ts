@@ -49,7 +49,7 @@ export class BrowserAudioAdapter implements AudioAdapter {
 
   private audioCtx: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
-  private meterData: Uint8Array | null = null;
+  private meterData: Uint8Array<ArrayBuffer> | null = null;
   private meterRaf = 0;
   private meter = new Meter();
   private smoothed = 0;
@@ -208,7 +208,7 @@ export class BrowserAudioAdapter implements AudioAdapter {
     analyser.fftSize = 2048;
     ctx.createMediaStreamSource(stream).connect(analyser);
     this.analyser = analyser;
-    this.meterData = new Uint8Array(analyser.frequencyBinCount);
+    this.meterData = new Uint8Array(new ArrayBuffer(analyser.frequencyBinCount));
     this.meter = new Meter();
     this.smoothed = 0;
     const tick = () => {
