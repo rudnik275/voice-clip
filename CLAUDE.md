@@ -32,78 +32,47 @@ test("hello world", () => {
 
 ## Frontend
 
-Use HTML imports with `Bun.serve()`. Don't use `vite`. HTML imports fully support React, CSS, Tailwind.
+The frontend is a **Vue 3 SPA built with Vite** (Vue 3.5 + Pinia 3 + Vite 8 +
+`@vitejs/plugin-vue` 6), living under `web/`. This **overrides** the generic
+Bun guidance above: for this project's frontend, **use Vite, not `Bun.build` /
+HTML-imports**, and `node_modules` deps (vue, pinia) are expected. The full
+rationale is [`docs/adr/0006-frontend-vue-spa-vite.md`](docs/adr/0006-frontend-vue-spa-vite.md);
+the rewrite PRD is #99.
 
-Server:
+- **Entry:** `web/index.html` → `web/src/main.ts` → `web/src/App.vue`. App.vue
+  resolves the session via `GET /me` (401 → redirect to `/login`) and renders
+  the authorized shell: `Toolbar` (history button + user pill) + `RecordView`.
+- **State:** Pinia stores in `web/src/stores/` — `session` (`/me`, quota, owner),
+  `recorder` (wraps the capture core), `history`. Thin fetch clients in
+  `web/src/api/`.
+- **Capture core:** framework-agnostic FSM in `core/` — `RecorderMachine` +
+  `AudioAdapter`/`Uploader` ports, `BrowserAudioAdapter` (all iOS quirks),
+  `meters`/`mime`/`uploader`. Unit-tested in `tests/core/` with a fake adapter.
+  See ADR 0006.
+- **Visual layer:** `web/style.css` is carried over 1:1 (Neo-Brutalism tokens,
+  dot-grid, mechanical press, voice halo via `--voice-level`, smoothing alpha
+  0.16 — see ADR 0002). SFC templates reuse the old ids/classes (`#rec`,
+  `.topbar-btn`, `.user-pill`, bottom-sheet modals) for pixel parity.
+- **Sounds:** `web/sounds.ts` (Web Audio synth, mute toggle in localStorage).
+- **No `vue-router`** (single screen; modals are reactive state) and **no
+  service worker** during the rewrite — the PWA manifest is kept so the app
+  still installs to the home screen. A service worker returns as a later task.
 
-```ts#index.ts
-import index from "./index.html"
+### Build & serving
 
-Bun.serve({
-  routes: {
-    "/": index,
-    "/api/users/:id": {
-      GET: (req) => {
-        return new Response(JSON.stringify({ id: req.params.id }));
-      },
-    },
-  },
-  // optional websocket support
-  websocket: {
-    open: (ws) => {
-      ws.send("Hello, world!");
-    },
-    message: (ws, message) => {
-      ws.send(message);
-    },
-    close: (ws) => {
-      // handle close
-    }
-  },
-  development: {
-    hmr: true,
-    console: true,
-  }
-})
-```
+`vite build` emits `web/dist/` with **content-hashed** assets (Vite owns asset
+versioning — the old boot-time `Bun.build(app.ts)` + manual `ASSET_VER` hashing
+and the "bump `CACHE` in 4 places" service-worker dance are **gone**). The Bun
+server serves `web/dist/` statically and `index.html` at `/` (see
+`src/serve-web.ts` / `src/server.ts`); the Dockerfile has a `vite build` stage.
 
-HTML files can import .tsx, .jsx or .js files directly and Bun's bundler will transpile & bundle automatically. `<link>` tags can point to stylesheets and Bun's CSS bundler will bundle.
+Scripts (`package.json`): `bun run dev:web` (Vite dev server), `bun run
+build:web` (`vite build`), `bun run typecheck` (covers `src` + `web` via
+`vue-tsc` + `core`), `bun test`.
 
-```html#index.html
-<html>
-  <body>
-    <h1>Hello, world!</h1>
-    <script type="module" src="./frontend.tsx"></script>
-  </body>
-</html>
-```
-
-With the following `frontend.tsx`:
-
-```tsx#frontend.tsx
-import React from "react";
-
-// import .css files directly and it works
-import './index.css';
-
-import { createRoot } from "react-dom/client";
-
-const root = createRoot(document.body);
-
-export default function Frontend() {
-  return <h1>Hello, world!</h1>;
-}
-
-root.render(<Frontend />);
-```
-
-Then, run index.ts
-
-```sh
-bun --hot ./index.ts
-```
-
-For more information, read the Bun API docs in `node_modules/bun-types/docs/**.md`.
+> The generic "use `Bun.serve()` HTML imports, don't use Vite" advice at the
+> top of this file applies to NEW Bun projects, **not** to this repo's
+> frontend, which ADR 0006 deliberately moved onto the Vue/Vite stack.
 
 ---
 
@@ -156,23 +125,25 @@ src/
   macos.ts                  pbcopy via Bun.spawn — used in legacy local-Mac path; in NAS deploy
                             this is a no-op since the container has no pbcopy
 
-web/
-  home.html                 PWA entry (authed shell). Topbar (history btn + user pill),
-                            main (record button), history modal, profile modal
-  app.ts                    /me check on load (401 → /login redirect), recording,
-                            history rendering, SW registration, profile menu (sign out,
-                            paired devices, UI sounds toggle)
-  sounds.ts                 Web Audio synth module — 8 UI sounds (start/stop/pause/resume,
+web/                        Vue 3 SPA (Vite). See "## Frontend" above + ADR 0006.
+  index.html                Vite entry → src/main.ts (the SPA shell at /)
+  src/main.ts               creates the app + Pinia, imports style.css, mounts #app
+  src/App.vue               /me gate (401 → /login) → Toolbar + RecordView
+  src/views/RecordView.vue  the record screen
+  src/components/           RecordButton, Toolbar, UserPill, HistoryModal, ProfileModal
+  src/stores/               Pinia: session, recorder, history
+  src/api/                  thin fetch clients (history, devices)
+  sounds.ts                 Web Audio synth — UI sounds (start/stop/pause/resume,
                             success bell, error buzzer, copy pop, modal swoosh).
                             No .wav/.mp3 assets. Mute toggle persisted in localStorage.
-  login.html                self-contained sign-in page (Google OAuth entry)
-  access-denied.html        self-contained "no access" page (daemon download w/o valid token)
-  style.css                 design tokens + components (Neo-Brutalism: cream + red + violet,
-                            thick black borders, hard offset shadows, mechanical press).
-                            See docs/adr/0002-neo-brutalism-design-system.md
-  sw.js                     service worker — cache-first for shell, passthrough for API
+  tauri-runtime.ts          Tauri adapter (IS_TAURI, pairing, sign-out) — Vue consumes it
+  login.html                self-contained sign-in page (Google OAuth entry), server-rendered
+  access-denied.html        self-contained "no access" page
+  pro.html / welcome.html   server-rendered standalone pages
+  style.css                 design tokens + components (Neo-Brutalism). ADR 0002.
   manifest.webmanifest      PWA manifest (icon set, theme color, display mode)
-  tsconfig.json             adds DOM lib (separate from server's tsconfig)
+  dist/                     vite build output (gitignored) — served statically by the server
+  (legacy app.ts / home.html / sw.js were removed in #106 — replaced by the SPA)
 
 daemon/
   index.ts                  Bun runtime that holds /events SSE → pbcopy → /events/ack loop
@@ -274,11 +245,11 @@ Typography: **Space Grotesk** (Google Fonts, weights 500/600/700) for everything
 
 ## Adding things
 
-**New endpoint:** add to `routes` in server.ts. Use `Response.json(...)`. Multi-method routes use `{ GET, POST }` shape. If it's an API path, list it in `isApiPath` inside `web/sw.js` so the SW passes through.
+**New endpoint:** add to `routes` in server.ts. Use `Response.json(...)`. Multi-method routes use `{ GET, POST }` shape. (No service worker anymore — there's no `isApiPath`/SW passthrough list to update; ADR 0006.)
 
 **New persistent state:** new `createXxxStore(dataDir)` factory in `src/`. File at `data/<name>.json`. Read-load-save pattern (no streaming — small data). Add tests in `tests/`.
 
-**New UI element:** HTML in `web/home.html`, style with existing tokens (Neo-Brutalism: thick borders + offset shadow + mechanical press, see Visual conventions). Wire in `web/app.ts`. If the interaction warrants audio feedback, add a matching synth function in `web/sounds.ts` and call it from `app.ts`.
+**New UI element:** add/extend a Vue SFC under `web/src/components/` (or a view in `web/src/views/`), style with existing tokens from `web/style.css` (Neo-Brutalism: thick borders + offset shadow + mechanical press, see Visual conventions). State goes in a Pinia store under `web/src/stores/`. If the interaction warrants audio feedback, add a matching synth function in `web/sounds.ts` and call it from the component.
 
 **New language preferences:** the language hint lives in `LANGUAGE_PROMPT` in `src/transcribe.ts` (ru/uk/en + "keep English terms verbatim" + "never Belarusian"). User-specific — see memory `feedback_transcription_languages.md`.
 
@@ -305,9 +276,16 @@ That rsyncs sources to the NAS, scp's the local `.env` (gitignored, AI-blocked),
 
 **PWA update propagation:** the page periodically calls `registration.update()` (every 30 min, plus on `online` and `visibilitychange`). When a new SW takes control (`controllerchange` fires after the first install), the page auto-reloads — so the tablet picks up new builds without manual close+reopen.
 
-**Important — cache busting:** when you ship changes to `web/` assets (HTML, bundled JS/CSS, but NOT `sw.js` itself), the SW byte-content doesn't change and the browser won't trigger an update cycle. **Bump `CACHE` in `web/sw.js`** (e.g. `voice-clip-v3` → `voice-clip-v4`) so the SW changes byte-wise, the activate handler clears the previous cache, and clients reload to fetch fresh.
+**Asset versioning (no manual cache-busting):** there is **no service worker**
+during the Vue rewrite (ADR 0006). `vite build` content-hashes every asset, so
+shipping new `web/` code changes the hashed filenames automatically — there is
+nothing to bump. (The old "bump `CACHE` in `web/sw.js`" ritual is gone.)
 
-**Version visibility:** the version string (`v7`, `v8`, …) is shown to the user in three places — bottom-right corner of the live UI (`#version-tag`), inside the `#boot-fallback` panel, and on `/offline`. There's also a plain-text `/version` endpoint. When bumping the SW cache, update **all four** spots: `web/sw.js` (`CACHE = 'voice-clip-vN'`), `web/index.html` (`#version-tag` and the `.version` span in `#boot-fallback`), `web/offline.html` (the `.version` span), and `src/server.ts` (the `APP_VERSION` constant). A test in `tests/pwa-shell.test.ts` enforces that they all match.
+**Version visibility:** `APP_VERSION` lives in `src/version.ts` and is exposed
+via the plain-text `/version` endpoint and stamped (`__APP_VERSION__`) into the
+server-rendered `login.html` / `welcome.html`. The old "bump the version in 4
+places + `web/sw.js` `CACHE` + `tests/pwa-shell.test.ts`" dance is gone with the
+service worker (ADR 0006); the SPA itself is versioned by Vite's content hashes.
 
 **Litestream / DB backup + restore:** a `voice-clip-litestream` sidecar in `docker-compose.prod.yml` continuously replicates `voice-clip.sqlite` to Hetzner Object Storage (7-day WAL retention, 24h snapshots). Config is `litestream.yml` at repo root. Credentials come from four `LITESTREAM_S3_*` env vars (see `.env.example`). Full restore procedure: `docs/runbook/litestream-restore.md` — run `scripts/litestream-restore.sh` on the VPS with the app container stopped.
 
