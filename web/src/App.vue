@@ -3,6 +3,8 @@ import { onMounted } from 'vue'
 import { useSessionStore } from './stores/session'
 import Toolbar from './components/Toolbar.vue'
 import RecordView from './views/RecordView.vue'
+// #103: history modal — rendered inside the authenticated shell.
+import HistoryModal from './components/HistoryModal.vue'
 
 // On load, resolve the session via GET /me. A 401 redirects the browser to
 // /login inside the store; otherwise the authorized shell renders.
@@ -21,5 +23,7 @@ onMounted(() => {
   <template v-if="session.isAuthenticated">
     <Toolbar />
     <RecordView />
+    <!-- #103: history bottom-sheet modal. Visibility driven by useHistoryStore().isOpen. -->
+    <HistoryModal />
   </template>
 </template>

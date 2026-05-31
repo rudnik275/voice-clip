@@ -2,10 +2,19 @@
 import { ref } from 'vue'
 import UserPill from './UserPill.vue'
 import ProfileModal from './ProfileModal.vue'
+import { useHistoryStore } from '@/stores/history'
+import { playModal } from '../../sounds'
 
-// Topbar: history button + user pill. Profile modal state lives here so
-// UserPill and ProfileModal are siblings (#104). History modal (#103) will
-// use the same pattern when that slice lands.
+// Topbar: history button + user pill. History button opens the history
+// bottom-sheet (#103); the user pill opens the profile modal (#104). Profile
+// modal state lives here so UserPill and ProfileModal are siblings.
+
+const history = useHistoryStore()
+
+function openHistory(): void {
+  playModal()
+  history.open()
+}
 
 // ---- profile modal state (#104) ----
 const profileOpen = ref(false)
@@ -15,7 +24,8 @@ function closeProfile() { profileOpen.value = false }
 
 <template>
   <div class="topbar">
-    <button class="topbar-btn" id="history-btn" type="button" aria-label="History">
+    <button class="topbar-btn" id="history-btn" type="button" aria-label="History"
+            @click="openHistory">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
            stroke-linecap="round" stroke-linejoin="round">
         <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
