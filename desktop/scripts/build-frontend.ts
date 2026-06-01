@@ -1,63 +1,40 @@
-// Build the Tauri webview frontend by bundling the PWA sources in web/.
-// Same code, two shells — keeps PWA and macOS app behaviour identical
-// without forking the UI. Output lands in desktop/src-tauri/dist/ which
-// tauri.conf.json declares as `frontendDist`.
+// Build the Tauri webview frontend = the Vue/Vite SPA, adapted for the macOS
+// desktop shell. Same web/ sources drive both the PWA and the desktop app
+// (ADR 0006): here we run the production `vite build`, then drop the result
+// into desktop/src-tauri/dist/ (tauri.conf.json's `frontendDist`) plus the two
+// desktop-only settings-window files.
+//
+// (Pre-Vue this script hand-bundled web/app.ts + home.html via Bun.build; both
+// were deleted in #106, so the desktop frontend now comes straight from Vite.)
+//
+// Asset paths: vite emits absolute /assets/<hashed> URLs. Tauri serves
+// frontendDist at the custom-protocol root, so those resolve in the webview.
+// App-level API calls (fetch('/me')) are rewritten to the server origin at
+// runtime by web/tauri-runtime.ts (imported early in web/src/main.ts), which
+// also drives the #tauri-pair splash baked into web/index.html.
 
-import { cp, mkdir, rm, writeFile } from 'node:fs/promises'
-import { APP_VERSION } from '../../src/version'
+import { cp, mkdir, rm } from 'node:fs/promises'
+import { $ } from 'bun'
 
 const REPO = new URL('../../', import.meta.url).pathname
 const OUT = `${REPO}desktop/src-tauri/dist`
 
+// 1. Production Vue build → web/dist (content-hashed assets + index.html, which
+//    carries the #tauri-pair splash markup the desktop shell needs). Run from
+//    the repo root so vite finds web/vite.config.ts + node_modules. Bun.$
+//    throws on a non-zero exit, so a failed build fails the tauri build.
+await $`bun run build:web`.cwd(REPO)
+
+// 2. Replace the desktop dist with the fresh web build.
 await rm(OUT, { recursive: true, force: true })
 await mkdir(OUT, { recursive: true })
+await cp(`${REPO}web/dist`, OUT, { recursive: true })
 
-// Bundle web/app.ts → dist/app.js. Same Bun.build invocation the server
-// runs at boot for the PWA — including sounds.ts via its import graph.
-const built = await Bun.build({
-  entrypoints: [`${REPO}web/app.ts`],
-  target: 'browser',
-  minify: true,
-})
-if (!built.success) {
-  console.error('bun build failed:')
-  for (const log of built.logs) console.error(log)
-  process.exit(1)
-}
-const appJs = await built.outputs[0]!.text()
-await writeFile(`${OUT}/app.js`, appJs)
-
-// Style sheet — copy verbatim, no rewriting (the tokens + brutalism are
-// intentionally identical to the PWA).
+// 3. Settings window — a SEPARATE Tauri webview opened from the tray menu, not
+//    part of the SPA bundle. It's plain HTML/JS referencing style.css at the
+//    dist root, so copy all three verbatim.
 await cp(`${REPO}web/style.css`, `${OUT}/style.css`)
-
-// Tauri-only views (settings window). The main webview loads index.html;
-// this is opened from the tray menu via `open_settings`. Same brutalism
-// tokens via the shared style.css above.
 await cp(`${REPO}desktop/src/settings.html`, `${OUT}/settings.html`)
 await cp(`${REPO}desktop/src/settings.js`, `${OUT}/settings.js`)
 
-// Adapt home.html for the Tauri webview:
-//   - drop PWA-only chrome (manifest, icons, service worker registration)
-//   - relative paths instead of absolute (the webview's asset:// protocol
-//     resolves them off the bundled dist dir, not a server root)
-//   - swap the modulepreload + <script src="/app.ts"> for the pre-built
-//     app.js artifact we just wrote
-//   - stamp the version string the PWA's server normally substitutes
-let html = await Bun.file(`${REPO}web/home.html`).text()
-html = html
-  .replace(/^\s*<link rel="manifest"[^>]*>\s*$/gm, '')
-  .replace(/^\s*<link rel="(icon|apple-touch-icon)"[^>]*>\s*$/gm, '')
-  .replace(/<script>[\s\S]*?serviceWorker[\s\S]*?<\/script>/g, '')
-  .replace(/<link rel="modulepreload"[^>]*\/app\.ts"\s*\/?>/g, '')
-  .replace(
-    /<script type="module" src="\/app\.ts"><\/script>/g,
-    '<script type="module" src="app.js"></script>',
-  )
-  .replaceAll('"/style.css"', '"style.css"')
-  .replaceAll('__APP_VERSION__', APP_VERSION)
-await writeFile(`${OUT}/index.html`, html)
-
 console.log(`✓ desktop frontend built → ${OUT}`)
-console.log(`  app.js     ${(appJs.length / 1024).toFixed(1)} KiB`)
-console.log(`  index.html ${(html.length / 1024).toFixed(1)} KiB`)

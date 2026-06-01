@@ -28,6 +28,7 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_deep_link::DeepLinkExt;
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_updater::UpdaterExt;
 
 use sse::{ConnStatus, SseClient};
@@ -434,27 +435,91 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                     show_settings_window(app);
                 }
                 "check-updates" => {
+                    // Run off the main thread: updater I/O is async and the
+                    // dialog `blocking_show()` calls below MUST NOT run on the
+                    // UI thread (they dispatch UI to it and would deadlock).
                     let handle = app.clone();
                     tauri::async_runtime::spawn(async move {
-                        match handle.updater() {
-                            Ok(updater) => match updater.check().await {
-                                Ok(Some(update)) => {
-                                    if let Err(e) = update
-                                        .download_and_install(|_chunk, _total| {}, || {})
-                                        .await
-                                    {
-                                        eprintln!("check-updates: install error: {e}");
+                        let notify = |kind: MessageDialogKind, title: &str, body: String| {
+                            handle
+                                .dialog()
+                                .message(body)
+                                .title(title)
+                                .kind(kind)
+                                .blocking_show();
+                        };
+
+                        let updater = match handle.updater() {
+                            Ok(u) => u,
+                            Err(e) => {
+                                notify(
+                                    MessageDialogKind::Error,
+                                    "Voice Clip",
+                                    format!("Could not start the updater: {e}"),
+                                );
+                                return;
+                            }
+                        };
+
+                        match updater.check().await {
+                            Ok(Some(update)) => {
+                                let version = update.version.clone();
+                                // Ask before pulling ~11 MB + restarting.
+                                let install = handle
+                                    .dialog()
+                                    .message(format!(
+                                        "Version {version} is available. Download and restart now?"
+                                    ))
+                                    .title("Update available")
+                                    .buttons(MessageDialogButtons::OkCancelCustom(
+                                        "Install".to_string(),
+                                        "Later".to_string(),
+                                    ))
+                                    .blocking_show();
+                                if !install {
+                                    return;
+                                }
+                                match update
+                                    .download_and_install(|_chunk, _total| {}, || {})
+                                    .await
+                                {
+                                    Ok(()) => {
+                                        notify(
+                                            MessageDialogKind::Info,
+                                            "Update installed",
+                                            format!(
+                                                "Voice Clip {version} is installed. The app will now restart."
+                                            ),
+                                        );
+                                        // Replace the running (old) process with
+                                        // the freshly-installed bundle — without
+                                        // this the update sits on disk until the
+                                        // user manually quits and reopens, which
+                                        // looked like "nothing happened".
+                                        handle.restart();
+                                    }
+                                    Err(e) => {
+                                        notify(
+                                            MessageDialogKind::Error,
+                                            "Update failed",
+                                            format!("Could not install the update: {e}"),
+                                        );
                                     }
                                 }
-                                Ok(None) => {
-                                    eprintln!("check-updates: already up to date");
-                                }
-                                Err(e) => {
-                                    eprintln!("check-updates: check error: {e}");
-                                }
-                            },
+                            }
+                            Ok(None) => {
+                                notify(
+                                    MessageDialogKind::Info,
+                                    "Voice Clip",
+                                    "You're already on the latest version.".to_string(),
+                                );
+                            }
                             Err(e) => {
-                                eprintln!("check-updates: updater error: {e}");
+                                notify(
+                                    MessageDialogKind::Error,
+                                    "Voice Clip",
+                                    format!("Could not check for updates: {e}"),
+                                );
                             }
                         }
                     });
@@ -610,6 +675,7 @@ fn main() {
         ))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         // Closing the window must NOT quit — this is a menu-bar app. Hide
         // it instead; reopen via the tray "Open Voice Clip" item.

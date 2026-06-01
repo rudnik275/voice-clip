@@ -20,6 +20,30 @@
          keeps install-to-home-screen working. -->
   </head>
   <body>
+    <!-- Tauri-only "pair this Mac" splash. Hidden by default; web/tauri-runtime.ts
+         un-hides it (via getElementById) when the desktop app boots without a
+         Keychain device_token. It lives OUTSIDE #app (a fixed full-screen
+         overlay, styled by .tauri-pair* in style.css) so it works without Vue
+         reactivity and the PWA — where window.__TAURI__ is undefined — never
+         shows it. Markup mirrors the pre-Vue home.html so style.css renders it
+         identically. -->
+    <section id="tauri-pair" class="tauri-pair" hidden>
+      <div class="logo-sticker">voice-clip</div>
+      <h1 class="tauri-pair-title">Hook this Mac up</h1>
+      <p class="tauri-pair-explainer">
+        Sign in with Google to pair this Mac. After that, you can record
+        right here — and clips also land in this Mac's clipboard from your
+        phone.
+      </p>
+      <button id="tauri-pair-btn" class="tauri-pair-btn" type="button">
+        Sign in with Google
+      </button>
+      <p class="tauri-pair-hint" id="tauri-pair-hint" hidden>
+        Browser opening — finish sign-in there. This window will refresh
+        automatically when pairing completes.
+      </p>
+    </section>
+
     <div id="app"></div>
     <script type="module" src="./src/main.ts"></script>
   </body>

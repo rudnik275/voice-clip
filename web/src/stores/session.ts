@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { tauriRedirectToLogin } from '../../tauri-runtime'
 
 // Shape of the GET /me response (src/server.ts). This foundation slice
 // only needs identity + owner bit; plan/usage are carried through loosely
@@ -46,7 +47,11 @@ export const useSessionStore = defineStore('session', () => {
       const res = await fetch('/me', { credentials: 'same-origin' })
       if (res.status === 401) {
         status.value = 'unauthenticated'
-        window.location.href = '/login'
+        // Under Tauri there is no /login route in the bundled webview —
+        // tauriRedirectToLogin() opens Google OAuth in the system browser and
+        // returns true so we DON'T navigate the webview to a dead /login. In
+        // the PWA it returns false and we fall through to the real redirect.
+        if (!tauriRedirectToLogin()) window.location.href = '/login'
         return
       }
       if (!res.ok) {
