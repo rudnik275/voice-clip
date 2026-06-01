@@ -19,7 +19,14 @@
          Vue rewrite (it returns in a later task). The PWA manifest above
          keeps install-to-home-screen working. -->
   </head>
-  <body>
+  <!-- ontouchstart="" enables the CSS :active mechanical-press on iOS Safari for
+       every element on the page. Without a touch listener somewhere in the
+       ancestor chain, iOS only fires :active on elements that have their own
+       touch/pointer handler — which is why the record button (#rec, @pointerdown)
+       pressed but the toolbar/history/modal buttons never did. The empty handler
+       on <body> is the canonical fix and also covers the #tauri-pair splash that
+       lives outside #app. -->
+  <body ontouchstart="">
     <!-- Tauri-only "pair this Mac" splash. Hidden by default; web/tauri-runtime.ts
          un-hides it (via getElementById) when the desktop app boots without a
          Keychain device_token. It lives OUTSIDE #app (a fixed full-screen
