@@ -308,5 +308,9 @@ export const useRecorderStore = defineStore('recorder', () => {
     tap,
     togglePause,
     debugLog,
+    // The toast is rendered once (in RecordButton, #status) but driven from
+    // here; expose showStatus so other surfaces (e.g. the history Copy button)
+    // can raise the same toast instead of each owning a separate one.
+    showStatus,
   }
 })

@@ -9,17 +9,25 @@
 
 import { computed } from 'vue'
 import { useHistoryStore } from '@/stores/history'
+import { useRecorderStore } from '@/stores/recorder'
 
 // sounds.ts lives at web/sounds.ts (not inside web/src). The relative path
 // from web/src/components/ is ../../sounds.ts.
 import { playModal, playCopy } from '../../sounds'
 
 const history = useHistoryStore()
+const recorder = useRecorderStore()
 
-// Format a recordedAt ISO string the same way the legacy `fmtTime` did.
-function fmtTime(iso: string): string {
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return iso
+// Format a recordedAt timestamp. The capture core emits recordedAt as epoch
+// milliseconds (core/ports.ts), which the uploader sends as a numeric string
+// and the server stores/returns verbatim (e.g. "1780307347909") — so a digits
+// only value is epoch-ms. (Older rows may carry an ISO string; parse those as
+// a date.) Without this, `new Date("1780307347909")` is Invalid and the raw
+// number leaks into the UI.
+function fmtTime(value: string | number): string {
+  const raw = String(value)
+  const d = /^\d+$/.test(raw) ? new Date(Number(raw)) : new Date(raw)
+  if (Number.isNaN(d.getTime())) return raw
   return d.toLocaleString(undefined, {
     month: 'short',
     day: 'numeric',
@@ -37,6 +45,10 @@ function onBackdropClick(): void {
 async function copyClip(text: string, seq: number): Promise<void> {
   void navigator.clipboard?.writeText(text).catch(() => {})
   playCopy()
+  // Confirm the copy with the shared toast (#status, z-index above the modal),
+  // matching the legacy app.ts which showStatus('Copied','success') here. The
+  // toast was simply never raised in the Vue rewrite.
+  recorder.showStatus('success', 'Скопировано')
   // Best-effort fan-out to paired Macs — same logic as legacy app.ts.
   void fetch('/clip/copy', {
     method: 'POST',
