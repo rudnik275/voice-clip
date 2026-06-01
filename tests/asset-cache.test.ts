@@ -3,7 +3,8 @@
 //      asset URLs inside it).
 //   - `/assets/*` serves content-hashed JS/CSS with immutable caching.
 //   - `/manifest.webmanifest` + `/icons/*` keep working (PWA install).
-//   - The old `/app.ts`, `/sw.js`, `/style.css` routes are gone — no SW.
+//   - The old `/app.ts` / `/style.css` routes are gone; `/sw.js` now serves a
+//     self-destroying kill-switch that unregisters the pre-rewrite SW.
 //
 // These assume `web/dist/` exists (produced by `bun run build:web`). The
 // Docker image bakes it via a `vite build` stage; locally CI builds it
@@ -100,11 +101,22 @@ test('GET /icons/icon-192.png is served with immutable cache headers', async () 
   expect(res.headers.get('cache-control')).toContain('immutable')
 })
 
-test('legacy /app.ts and /sw.js routes are gone (no service worker)', async () => {
+test('legacy /app.ts route is gone (no Bun.build SPA serving)', async () => {
   const appTs = await fetch(`${baseUrl}/app.ts`)
   expect(appTs.status).toBe(404)
+})
+
+test('/sw.js serves a self-destroying kill-switch for the legacy service worker', async () => {
   const sw = await fetch(`${baseUrl}/sw.js`)
-  expect(sw.status).toBe(404)
+  expect(sw.status).toBe(200)
+  expect(sw.headers.get('content-type')).toContain('javascript')
+  // Must never be cached, so the browser's update check always re-fetches it.
+  expect(sw.headers.get('cache-control')).toContain('no-store')
+  const body = await sw.text()
+  // It must actually self-destruct: clear caches, unregister, claim clients.
+  expect(body).toContain('skipWaiting')
+  expect(body).toContain('caches.delete')
+  expect(body).toContain('registration.unregister')
 })
 
 test('dist index.html does not register a service worker', () => {

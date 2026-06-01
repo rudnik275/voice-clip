@@ -55,6 +55,7 @@ import {
   unauthorized,
 } from './auth-middleware'
 import { APP_VERSION } from './version'
+import { LEGACY_SW_KILL_SWITCH } from './legacy-sw'
 
 export interface ServerDeps {
   dataDir: string
@@ -483,6 +484,20 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
         return new Response(APP_VERSION, {
           status: 200,
           headers: { 'content-type': 'text/plain; charset=utf-8' },
+        })
+      }
+      // Self-destroying kill-switch for the pre-rewrite service worker. Served
+      // (not 404'd) so the browser's SW update check installs it and it
+      // unregisters the stale worker + wipes its caches — see src/legacy-sw.ts.
+      // `no-store` so the browser always re-fetches the killer, never a cached
+      // copy of it. The SPA itself registers NO service worker (ADR 0006).
+      if (method === 'GET' && pathname === '/sw.js') {
+        return new Response(LEGACY_SW_KILL_SWITCH, {
+          status: 200,
+          headers: {
+            'content-type': 'text/javascript; charset=utf-8',
+            'cache-control': 'no-cache, no-store, must-revalidate',
+          },
         })
       }
       if (method === 'GET' && pathname === '/manifest.webmanifest') {
