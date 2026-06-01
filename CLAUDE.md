@@ -84,7 +84,7 @@ Multi-user PWA-server that turns voice recordings into clipboard text. Phones re
 >
 > - **Storage:** single SQLite file at `data/voice-clip.sqlite`. Tables: `users`, `sessions`, `history`, `costs`, `devices`, `pending_deliveries`, `errors`, `allowed_emails`, `invites`, `user_plans`, `usage_counters`. Source of truth: [`src/db.ts`](src/db.ts).
 > - **Stores:** `users-store`, `sessions-store`, `history-store`, `cost-store`, `devices-store`, `pending-deliveries-store`, `errors-store`, `failed-audio-store`, `allowed-emails-store`, `invites-store`, `plans-store`. All in `src/`, all `(db, now?)` factories.
-> - **Deploy target:** Hetzner VPS `46.62.229.131` (`deploy` user), `https://voice.rudifamily.uk` via Cloudflare Tunnel. NOT a Synology NAS anymore. CI-push deploys on every merge to `master` (`.github/workflows/server-deploy.yml`).
+> - **Deploy target:** Hetzner VPS `46.62.229.131` (`deploy` user), `https://voice.rudifamily.uk` via Cloudflare Tunnel. NOT a Synology NAS anymore. CI deploys **on a pushed `v*` git tag** — release = `git tag vN && git push --tags`; a plain merge to `master` only runs tests, it does NOT deploy (`.github/workflows/server-deploy.yml`). See "Tag-based release / deploy" below.
 > - **Auth:** Google OAuth + DB-backed allowlist + invite links. `VOICE_CLIP_ALLOWED_EMAILS` seeds the table on boot; new users join via `/invite/:token` consumed atomically in the OAuth callback. `OWNER_EMAIL` marks the owner (sees admin UI). `ADMIN_TOKEN` is an alt admin path for ops scripts.
 > - **Pricing scaffold:** three tiers in `user_plans` — **Free** (30 clips/mo), **Pro** ($3/mo · 50 clips/mo · 5-min/clip cap), **Unlimited** (owner-comp, no caps, no per-clip cap). Stripe not wired yet — promote by `UPDATE user_plans SET plan='pro'|'unlimited' …`. Sizing math + tier rationale in [`docs/adr/0004-pro-tier-pricing.md`](docs/adr/0004-pro-tier-pricing.md); original scaffold in [`docs/adr/0003-monetization-scaffold.md`](docs/adr/0003-monetization-scaffold.md).
 > - **Operations:** [`docs/runbook/operations.md`](docs/runbook/operations.md) covers invites, quota override, observability, cost queries.
@@ -94,7 +94,7 @@ Multi-user PWA-server that turns voice recordings into clipboard text. Phones re
 
 Two deployment modes:
 - **Local Mac dev** (mkcert + pm2 + `https://Mac-mini-Rudnik.local:8443`) — for hacking on the code.
-- ~~**Synology NAS via Tailscale Funnel + Docker**~~ → **Hetzner VPS via Cloudflare Tunnel + Docker**. Production, public HTTPS, multi-user, CI-deployed on merge to `master`.
+- ~~**Synology NAS via Tailscale Funnel + Docker**~~ → **Hetzner VPS via Cloudflare Tunnel + Docker**. Production, public HTTPS, multi-user, CI-deployed **on a pushed `v*` git tag** (not on every merge to `master`).
 
 ## File map
 
@@ -281,11 +281,35 @@ during the Vue rewrite (ADR 0006). `vite build` content-hashes every asset, so
 shipping new `web/` code changes the hashed filenames automatically — there is
 nothing to bump. (The old "bump `CACHE` in `web/sw.js`" ritual is gone.)
 
-**Version visibility:** `APP_VERSION` lives in `src/version.ts` and is exposed
-via the plain-text `/version` endpoint and stamped (`__APP_VERSION__`) into the
-server-rendered `login.html` / `welcome.html`. The old "bump the version in 4
-places + `web/sw.js` `CACHE` + `tests/pwa-shell.test.ts`" dance is gone with the
-service worker (ADR 0006); the SPA itself is versioned by Vite's content hashes.
+**Version visibility:** the build version is the **git tag that triggered the
+release** — there is no hand-edited constant anymore. `src/version.ts` reads
+`process.env.APP_VERSION` (falling back to `'dev'` locally); CI bakes the tag in
+at image-build time via `--build-arg APP_VERSION=${{ github.ref_name }}` →
+`ENV APP_VERSION` (Dockerfile runtime stage), because `.git` is in
+`.dockerignore` so the container can't `git describe`. The value is exposed via
+the plain-text `/version` endpoint and stamped (`__APP_VERSION__`) into the
+server-rendered `login.html` / `welcome.html` / `access-denied.html` footers.
+**Release = `git tag vN && git push --tags`** (see "Tag-based release" below) —
+do NOT edit a version string by hand. The old "bump the version in 4 places +
+`web/sw.js` `CACHE`" dance is gone with the service worker (ADR 0006); the SPA
+itself is versioned by Vite's content hashes.
+
+**Tag-based release / deploy:** `.github/workflows/server-deploy.yml` triggers
+on `push` to `master` **and** on `push` of a `v*` tag. A plain merge to master
+runs **only** the `test` job (typecheck + `bun test`) — fast feedback, no
+deploy. `build-and-push` + `deploy` are gated on `if: startsWith(github.ref,
+'refs/tags/v')`, so a prod roll happens **only** when you push a `v*` tag:
+
+```sh
+git tag v32 && git push origin v32   # or: git push --tags
+```
+
+The tag flows in as `github.ref_name`, becomes the `APP_VERSION` build-arg, and
+also tags the image (`ghcr.io/rudnik275/voice-clip:v32` alongside `:latest` +
+`:<sha>`). Server tags are `v*`; the desktop updater uses the separate
+`desktop-v*` namespace (`tauri-release.yml`) — `v*` does not match `desktop-v*`,
+so the two release lanes never collide. Smoke after a deploy: `curl
+https://voice.rudifamily.uk/version` → the tag you pushed.
 
 **Litestream / DB backup + restore:** a `voice-clip-litestream` sidecar in `docker-compose.prod.yml` continuously replicates `voice-clip.sqlite` to Hetzner Object Storage (7-day WAL retention, 24h snapshots). Config is `litestream.yml` at repo root. Credentials come from four `LITESTREAM_S3_*` env vars (see `.env.example`). Full restore procedure: `docs/runbook/litestream-restore.md` — run `scripts/litestream-restore.sh` on the VPS with the app container stopped.
 

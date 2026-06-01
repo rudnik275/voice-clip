@@ -9,7 +9,9 @@ Day-to-day ops for voice-clip on the VPS (`deploy@46.62.229.131`, public
   the way it is
 
 The app reads `/opt/voice-clip/.env` on the VPS. CI deploys roll the container
-on every merge to `master` (see `.github/workflows/server-deploy.yml`).
+**on a pushed `v*` git tag** — release = `git tag vN && git push --tags`; a
+plain merge to `master` only runs tests, it does not deploy (see
+`.github/workflows/server-deploy.yml`).
 
 ---
 

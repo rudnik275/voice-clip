@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # redeploy.sh — manual emergency roll: pull the latest image + restart.
 #
-# Normal deploys are automatic: a push to master runs the `deploy` job in
-# .github/workflows/server-deploy.yml, which rolls the image and health-gates
-# it. Use this script only when CI itself is unavailable and you need to roll
-# by hand from your Mac.
+# Normal deploys are automatic: pushing a `v*` git tag (`git tag vN && git push
+# --tags`) runs the `deploy` job in .github/workflows/server-deploy.yml, which
+# rolls the image and health-gates it. (A plain merge to master only runs tests
+# — it does NOT deploy.) Use this script only when CI itself is unavailable and
+# you need to roll by hand from your Mac.
 #
 # Usage:
 #   ./scripts/redeploy.sh                       # prompts for the VPS host
