@@ -199,7 +199,7 @@ done
 
 if [ -n "${DEPLOYED}" ]; then
   ok "LIVE — ${PUBLIC_URL}/version → ${DEPLOYED}"
-  ok "Future deploys: push to master → the server-deploy 'deploy' job rolls it automatically."
+  ok "Future deploys: git tag vN && git push --tags → the server-deploy 'deploy' job rolls it automatically (a plain merge to master only runs tests)."
   cat <<EOF
 
 Next: open ${PUBLIC_URL} → "Sign in with Google".

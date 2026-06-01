@@ -30,6 +30,13 @@ RUN bun run build:web
 FROM oven/bun:1-alpine AS runtime
 WORKDIR /app
 
+# Build version = the git tag that triggered the release, passed in from CI as
+# `--build-arg APP_VERSION=<tag>` (server-deploy.yml uses github.ref_name). We
+# can't `git describe` inside the image — `.git` is in .dockerignore — so the
+# tag has to arrive as a build-arg and get frozen into ENV for src/version.ts
+# to read at boot. Defaults to 'dev' for a local `docker build` without the arg.
+ARG APP_VERSION=dev
+
 # wget for the HEALTHCHECK (smaller than curl, ships in busybox).
 # tini optional — bun handles SIGTERM, docker stop is enough.
 
@@ -48,7 +55,8 @@ RUN mkdir -p /data && chown -R app:app /app /data
 USER app
 
 ENV PORT=8080 \
-    DATA_DIR=/data
+    DATA_DIR=/data \
+    APP_VERSION=$APP_VERSION
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
