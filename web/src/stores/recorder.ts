@@ -34,7 +34,10 @@ import {
 // observable in the browser via debugLog().
 
 export type StatusKind = 'info' | 'error' | 'success'
-export type Status = { kind: StatusKind; text: string } | null
+// `text` is the short toast title; `preview` (optional) is a longer body —
+// e.g. the transcribed text — that the view renders in a separate, line-clamped
+// element so a long transcript can't grow the toast to cover the screen.
+export type Status = { kind: StatusKind; text: string; preview?: string } | null
 
 const STATUS_MS = 4200
 
@@ -132,7 +135,10 @@ export const useRecorderStore = defineStore('recorder', () => {
     if (from === 'transcribing' && snap.state === 'idle') {
       finishClipboard(true)
       playSuccess()
-      showStatus('success', lastText.value || 'Готово')
+      // Short title + the transcript as a (line-clamped) preview body — same
+      // split the pre-Vue app.ts used, so a long transcript stays 2 lines tall
+      // instead of dumping the whole text into the toast and covering the screen.
+      showStatus('success', 'Готово', lastText.value || undefined)
     }
 
     // ---- failure: any → error ----
@@ -233,8 +239,8 @@ export const useRecorderStore = defineStore('recorder', () => {
     }
   }
 
-  function showStatus(kind: StatusKind, text: string): void {
-    status.value = { kind, text }
+  function showStatus(kind: StatusKind, text: string, preview?: string): void {
+    status.value = { kind, text, preview }
     if (statusTimer) clearTimeout(statusTimer)
     statusTimer = setTimeout(() => {
       status.value = null

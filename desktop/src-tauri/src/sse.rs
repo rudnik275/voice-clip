@@ -9,6 +9,12 @@
 //! 30s. Any disconnect (network drop, server restart, idle timeout) loops
 //! back into a fresh connect attempt — the connection is meant to be held
 //! "forever" while the Mac is online.
+//!
+//! Liveness: TCP keepalive (`TCP_KEEPALIVE_*`) backstops silent half-open
+//! connections (sleep/wake, Wi-Fi switch, a proxy dropping the socket without
+//! a FIN). The server's 25s heartbeat keeps a live socket from ever idling long
+//! enough to probe, so a failed probe means the connection is dead → read error
+//! → break → reconnect, instead of parking forever while clips quietly stop.
 
 use std::io::{BufRead, BufReader};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,6 +29,17 @@ use crate::clipboard::pbcopy;
 
 const BACKOFF_BASE_MS: u64 = 1_000;
 const BACKOFF_CAP_MS: u64 = 30_000;
+/// TCP keepalive — detects half-open connections. Idle time before the OS
+/// starts probing a quiet socket. The server's 25s `: ping` heartbeat resets
+/// the idle timer on every live stream, so a probe only ever fires on a stream
+/// that has genuinely gone silent.
+const TCP_KEEPALIVE_IDLE: Duration = Duration::from_secs(20);
+/// Interval between keepalive probes once the socket is deemed idle.
+const TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
+/// Unanswered probes before the OS tears the socket down — ≈50s end-to-end to
+/// detect a dead link (20s idle + 3×10s), after which the read errors out and
+/// the loop reconnects.
+const TCP_KEEPALIVE_RETRIES: u32 = 3;
 
 /// The clip frame the server fans out on `/upload` (see live-bus.publish).
 #[derive(Debug, Deserialize)]
@@ -90,8 +107,20 @@ where
 
     thread::spawn(move || {
         let client = reqwest::blocking::Client::builder()
-            // Never time out the read — SSE is an idle-tolerant long poll.
+            // No overall request timeout — SSE is a long-lived stream, and
+            // reqwest's blocking builder has no per-read timeout. Instead we
+            // lean on TCP keepalive to spot half-open connections (Mac slept,
+            // Wi-Fi switched, a proxy dropped the socket without a FIN). Without
+            // it the blocking read parks forever, the status stays "Connected",
+            // and clips silently stop arriving (Cmd+V "sometimes doesn't
+            // work"). The server's 25s `: ping` heartbeat keeps a LIVE socket
+            // from ever idling long enough to probe, so keepalive only tears
+            // down genuinely dead links — the failed probe surfaces as a read
+            // error → break → reconnect.
             .timeout(None)
+            .tcp_keepalive(TCP_KEEPALIVE_IDLE)
+            .tcp_keepalive_interval(TCP_KEEPALIVE_INTERVAL)
+            .tcp_keepalive_retries(TCP_KEEPALIVE_RETRIES)
             .build()
             .expect("build reqwest client");
 

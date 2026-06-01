@@ -1,6 +1,6 @@
 [package]
 name = "voice-clip-desktop"
-version = "0.3.4"
+version = "0.3.5"
 description = "Voice Clip — macOS clipboard receiver"
 authors = ["Dmitriy Rudnik"]
 edition = "2021"
@@ -25,6 +25,10 @@ tauri-plugin-deep-link = "2"
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 tauri-plugin-updater = "2"
 tauri-plugin-opener = "2"
+# Native message/confirm dialogs so "Check for Updates" actually tells the user
+# what happened (available / installing / up-to-date / error) instead of only
+# writing to stderr.
+tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Blocking reqwest: the SSE read loop runs on its own std thread so a

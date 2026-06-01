@@ -42,11 +42,19 @@ watchEffect(() => {
 })
 
 // Toast statuses (transcript preview / hints / errors) reuse the #status element
-// and its .show/.error/.success classes from style.css.
+// and its .show/.error/.success classes from style.css. When the status carries
+// a `preview` (e.g. the transcript), add .has-preview so style.css switches to
+// the title + line-clamped-body layout — without it a long transcript wraps
+// unbounded and covers the screen (the pre-Vue app.ts split title/preview too).
 const statusClasses = computed(() => {
   const st = rec.status
   if (!st) return ''
-  return ['show', st.kind === 'error' ? 'error' : '', st.kind === 'success' ? 'success' : '']
+  return [
+    'show',
+    st.kind === 'error' ? 'error' : '',
+    st.kind === 'success' ? 'success' : '',
+    st.preview ? 'has-preview' : '',
+  ]
     .filter(Boolean)
     .join(' ')
 })
@@ -93,6 +101,10 @@ const statusClasses = computed(() => {
   </button>
 
   <p id="status" role="status" aria-live="polite" :class="statusClasses">
-    {{ rec.status?.text ?? '' }}
+    <template v-if="rec.status?.preview">
+      <span class="toast-title">{{ rec.status.text }}</span>
+      <span class="toast-preview">{{ rec.status.preview }}</span>
+    </template>
+    <template v-else>{{ rec.status?.text ?? '' }}</template>
   </p>
 </template>

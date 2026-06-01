@@ -33,11 +33,17 @@ jobs:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       # tauri.conf.json's beforeBuildCommand calls `bun ../scripts/build-frontend.ts`
-      # which assembles the desktop webview bundle from web/. macos-latest
-      # doesn't ship Bun, so install it explicitly.
+      # which now runs `vite build` to assemble the desktop webview bundle from
+      # web/. macos-latest doesn't ship Bun, so install it explicitly.
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.1
+
+      # vite + @vitejs/plugin-vue + vue + pinia must be present for the Vite
+      # build inside build-frontend.ts. (The pre-Vue Bun.build path needed no
+      # node_modules, so this step didn't exist before.)
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
 
       - name: Build, sign, and release with tauri-action
         uses: tauri-apps/tauri-action@v0
