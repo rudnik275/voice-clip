@@ -18,7 +18,14 @@ function openHistory(): void {
 
 // ---- profile modal state (#104) ----
 const profileOpen = ref(false)
-function openProfile() { profileOpen.value = true }
+function openProfile() {
+  // Play the swoosh HERE, synchronously inside the user-pill click gesture —
+  // not in a ProfileModal watch(props.open), which fires in a microtask after
+  // the gesture and is silent on iOS (WebAudio needs the live gesture). Matches
+  // the old app.ts openProfile().
+  playModal()
+  profileOpen.value = true
+}
 function closeProfile() { profileOpen.value = false }
 </script>
 

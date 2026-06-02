@@ -18,6 +18,13 @@ let _ctx: AudioContext | null = null
 function ctx(): AudioContext | null {
   if (typeof window === 'undefined') return null
   if (isMuted()) return null
+  // Prime the iOS AVAudioSession category BEFORE creating/resuming the context.
+  // This used to be guaranteed by app.ts re-priming on every visibilitychange
+  // foreground; the Vue rewrite only primes on the record button. Priming here
+  // means a UI sound fired straight from its own click gesture (history open,
+  // Copy) arms the session itself — without it those sounds are silent on iOS
+  // until the user first taps record. Idempotent + iOS-only no-op elsewhere.
+  primeAudioSession()
   if (!_ctx) {
     const C = (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)
     if (!C) return null

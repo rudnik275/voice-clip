@@ -14,6 +14,8 @@ import {
   playSuccess,
   playError,
   unlockAudio,
+  primeAudioSession,
+  closeAudio,
 } from '../../sounds'
 
 // ---- recorder store: the thin Vue/Pinia wrapper around the capture core ----
@@ -172,10 +174,23 @@ export const useRecorderStore = defineStore('recorder', () => {
       if (state.value === 'recording') {
         machine.send('BACKGROUNDED')
         backgrounded = true
+      } else if (state.value === 'idle') {
+        // Idle + backgrounded: drop the UI-sound context so the iOS audio
+        // session fully releases (otherwise the lock screen shows a "Now
+        // Playing" widget and holds the mic indicator). Recreated lazily on
+        // the next gesture. Mirrors the old app.ts visibilitychange handler.
+        closeAudio()
       }
     } else {
       if (backgrounded && state.value === 'paused') machine.send('FOREGROUNDED')
       backgrounded = false
+      // Re-arm UI audio on every foreground. The old app.ts re-primed here on
+      // each return to the app, so menu/copy sounds were always ready; the Vue
+      // rewrite had only the record button doing this, leaving those sounds
+      // silent after a background round-trip until the next record. iOS resets
+      // the AVAudioSession category in the background, so prime BEFORE resuming.
+      primeAudioSession()
+      unlockAudio()
     }
   }
 
