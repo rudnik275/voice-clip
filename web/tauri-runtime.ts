@@ -111,15 +111,26 @@ function showPairingSplash(): void {
 }
 
 // Replaces `window.location.replace('/login')` from app.ts when running
-// under Tauri. The webview has no /login route — instead, open Google in
-// the user's default browser via the existing `begin_pairing` command.
+// under Tauri. The webview has no /login route — and a rejected device_token
+// must NOT auto-re-pair (that defeated "Revoke"; see below). Instead it drops
+// the desktop app back to the SignedOut pairing splash.
 // (In PWA mode this falls through to the original redirect.)
 export function tauriRedirectToLogin(): boolean {
   if (!tauri) return false
-  // Fire-and-forget — UI feedback (button label, pairing hint) happens in
-  // the dedicated pairing screen. For now this is a safety-net only: in
-  // normal Tauri flow the user is already paired and /me never 401s.
-  void tauri.core.invoke('begin_pairing').catch(() => {})
+  // A 401 from /me under Tauri means this Mac's device_token was rejected —
+  // almost always because the device was revoked server-side (Profile →
+  // Paired devices → Revoke). Device tokens never expire, so a 401 is
+  // terminal: drop into the SignedOut state instead of silently re-pairing.
+  //
+  // The previous behaviour fire-and-forget invoked `begin_pairing` here,
+  // which re-ran Google OAuth and minted a BRAND-NEW device — so "Revoke"
+  // could never stick for a running desktop app: the revoked Mac reappeared
+  // as a fresh device on its next /me. Instead: forget the dead cached token,
+  // tear down the SSE worker + wipe the Keychain token via `sign_out`, and
+  // show the pairing splash so re-pairing is an explicit, user-initiated tap.
+  tokenPromise = Promise.resolve(null)
+  void tauri.core.invoke('sign_out').catch(() => {})
+  showPairingSplash()
   return true
 }
 
