@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useSessionStore, type Me } from '../stores/session'
-import { isMuted, setMuted, playModal, playCopy } from '../../sounds'
+import { isMuted, setMuted, playCopy } from '../../sounds'
 import { IS_TAURI, tauriSignOut } from '../../tauri-runtime'
 import { fetchDevices, revokeDevice, generateInvite, type DeviceRow } from '../api/devices'
 
@@ -125,13 +125,15 @@ function onKeydown(e: KeyboardEvent) {
 onMounted(() => document.addEventListener('keydown', onKeydown))
 onUnmounted(() => document.removeEventListener('keydown', onKeydown))
 
-// Play swoosh when modal opens (mirrors old app.ts openProfile).
+// Refresh state when the modal opens. The open swoosh is played by Toolbar's
+// openProfile() inside the click gesture (iOS WebAudio needs the live gesture);
+// this watch runs in a post-gesture microtask, so a playModal() here would be
+// silent on iOS.
 watch(
   () => props.open,
   (val) => {
     if (val) {
       muted.value = isMuted() // refresh from localStorage on each open
-      playModal()
       void loadDevices()
     }
   },

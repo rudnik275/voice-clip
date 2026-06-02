@@ -2,10 +2,11 @@
 // HistoryModal — bottom-sheet history modal, reproducing the legacy
 // web/home.html + web/app.ts history section markup and classes 1:1.
 //
-// Opened/closed via the `history` Pinia store (no vue-router).
-// Plays the modal swoosh sound on open (matching old `openHistory`).
-// Each clip shows its recordedAt timestamp, recognised text, and a
-// Copy button that writes the text to the local clipboard.
+// Opened/closed via the `history` Pinia store (no vue-router). The open swoosh
+// is played by Toolbar's openHistory() inside the click gesture; this component
+// only owns the Copy sound. Each clip shows its recordedAt timestamp,
+// recognised text, and a Copy button that writes the text to the local
+// clipboard.
 
 import { computed } from 'vue'
 import { useHistoryStore } from '@/stores/history'
@@ -13,7 +14,7 @@ import { useRecorderStore } from '@/stores/recorder'
 
 // sounds.ts lives at web/sounds.ts (not inside web/src). The relative path
 // from web/src/components/ is ../../sounds.ts.
-import { playModal, playCopy } from '../../sounds'
+import { playCopy } from '../../sounds'
 
 const history = useHistoryStore()
 const recorder = useRecorderStore()
@@ -36,8 +37,6 @@ function fmtTime(value: string | number): string {
   })
 }
 
-// Called when the store opens — play the modal swoosh.
-// We watch isOpen in App.vue-level; here we play the sound in onOpen.
 function onBackdropClick(): void {
   history.close()
 }
