@@ -4,6 +4,7 @@ import { useSessionStore, type Me } from '../stores/session'
 import { isMuted, setMuted, playCopy } from '../../sounds'
 import { IS_TAURI, tauriSignOut } from '../../tauri-runtime'
 import { fetchDevices, revokeDevice, generateInvite, type DeviceRow } from '../api/devices'
+import { armClipboardWrite } from '../lib/clipboard'
 
 // ---- props / emits ----
 const props = defineProps<{ open: boolean }>()
@@ -220,14 +221,19 @@ function fmtRelative(ms: number): string {
 
 const isOwner = computed<boolean>(() => session.me?.is_owner ?? false)
 
-const inviteHint = ref('One-time, copied to clipboard')
+const INVITE_HINT_DEFAULT = 'One-time, copied to clipboard'
+const inviteHint = ref(INVITE_HINT_DEFAULT)
 const inviteGenerating = ref(false)
 const _inviteResetTimer = ref<ReturnType<typeof setTimeout> | null>(null)
 
 async function handleGenerateInvite(): Promise<void> {
   if (inviteGenerating.value) return
   inviteGenerating.value = true
-  const prev = inviteHint.value
+
+  // Arm the clipboard write synchronously inside the gesture so iOS Safari
+  // accepts it. The pending ClipboardItem resolves when generateInvite() returns.
+  const clipWrite = armClipboardWrite()
+
   inviteHint.value = 'Generating…'
   if (_inviteResetTimer.value !== null) {
     clearTimeout(_inviteResetTimer.value)
@@ -235,11 +241,11 @@ async function handleGenerateInvite(): Promise<void> {
   }
   try {
     const result = await generateInvite()
-    try {
-      await navigator.clipboard.writeText(result.url)
+    const copied = await clipWrite.finish(result.url)
+    if (copied) {
       playCopy()
       inviteHint.value = 'Copied to clipboard'
-    } catch {
+    } else {
       // Clipboard API blocked — show URL so the user can long-press copy.
       inviteHint.value = result.url
     }
@@ -247,8 +253,11 @@ async function handleGenerateInvite(): Promise<void> {
     inviteHint.value = 'Failed — check your connection'
   } finally {
     inviteGenerating.value = false
+    // Bug #3 fix: always reset to the constant baseline, not to whatever
+    // inviteHint happened to hold at click time (which may be a transient value
+    // from a previous generation within the 4s window).
     _inviteResetTimer.value = setTimeout(() => {
-      inviteHint.value = prev
+      inviteHint.value = INVITE_HINT_DEFAULT
       _inviteResetTimer.value = null
     }, 4000)
   }

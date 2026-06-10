@@ -42,12 +42,26 @@ function onBackdropClick(): void {
 }
 
 async function copyClip(text: string, seq: number): Promise<void> {
-  void navigator.clipboard?.writeText(text).catch(() => {})
-  playCopy()
-  // Confirm the copy with the shared toast (#status, z-index above the modal),
-  // matching the legacy app.ts which showStatus('Copied','success') here. The
-  // toast was simply never raised in the Vue rewrite.
-  recorder.showStatus('success', 'Скопировано')
+  let copied = false
+  try {
+    if (navigator.clipboard) {
+      await navigator.clipboard.writeText(text)
+      copied = true
+    }
+  } catch {
+    copied = false
+  }
+
+  if (copied) {
+    playCopy()
+    // Confirm the copy with the shared toast (#status, z-index above the modal),
+    // matching the legacy app.ts which showStatus('Copied','success') here. The
+    // toast was simply never raised in the Vue rewrite.
+    recorder.showStatus('success', 'Скопировано')
+  } else {
+    recorder.showStatus('error', 'Не удалось скопировать — попробуй вручную')
+  }
+
   // Best-effort fan-out to paired Macs — same logic as legacy app.ts.
   void fetch('/clip/copy', {
     method: 'POST',

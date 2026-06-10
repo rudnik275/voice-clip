@@ -4,7 +4,7 @@
     "target": "ESNext",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "types": ["vite/client"],
+    "types": ["vite/client", "bun"],
     "jsx": "preserve",
     "jsxImportSource": "vue",
     "verbatimModuleSyntax": true,
@@ -19,6 +19,6 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.vue", "vite.config.ts"],
+  "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.vue", "vite.config.ts", "../tests/web/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }
