@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { openDb } from '../src/db'
 import { createUsersStore } from '../src/users-store'
 import { createDevicesStore, type Device } from '../src/devices-store'
+import { createPendingDeliveriesStore } from '../src/pending-deliveries-store'
 
 function setup(now: () => number = Date.now) {
   const db = openDb(':memory:')
@@ -124,5 +125,78 @@ describe('devices-store (SQLite)', () => {
     expect(typeof d.device_token).toBe('string')
     expect(typeof d.created_at).toBe('number')
     expect(typeof d.last_seen_at).toBe('number')
+  })
+
+  // ---- deleteUnseenSince ----
+
+  test('deleteUnseenSince removes only devices whose last_seen_at < cutoff', () => {
+    let clock = 1_000_000_000_000
+    const { devices, users, user } = setup(() => clock)
+
+    // d1: seen at t=0 (stale)
+    const d1 = devices.create(user.id, 'Stale Mac')
+    // d2: seen at t=10000 (fresh — last_seen_at = clock = 10000 ms later)
+    clock += 10_000
+    devices.touch(d1.id) // doesn't help d1, we advance clock first
+    // Create d2 at the new clock value
+    const d2 = devices.create(user.id, 'Fresh Mac')
+
+    // Prune with cutoff = 5000 ms after epoch start: d1's last_seen_at (10000) is ABOVE cutoff
+    // so nothing pruned yet.
+    expect(devices.deleteUnseenSince(1_000_000_005_000)).toBe(0)
+    expect(devices.findById(d1.id)).not.toBeNull()
+    expect(devices.findById(d2.id)).not.toBeNull()
+    void users
+  })
+
+  test('deleteUnseenSince removes stale devices and leaves fresh ones intact', () => {
+    let clock = 1_000_000_000_000
+    const db = openDb(':memory:')
+    const users = createUsersStore(db, () => clock)
+    const devices = createDevicesStore(db, () => clock)
+    const user = users.upsertByGoogleSub({ sub: 'g1', email: 'alice@example.com', name: 'Alice' })
+
+    // d1 created at t=0
+    const d1 = devices.create(user.id, 'Old Mac')
+    // advance clock by 70 days — d2 created fresh
+    clock += 70 * 24 * 60 * 60 * 1000
+    const d2 = devices.create(user.id, 'New Mac')
+
+    // cutoff = 60 days after the epoch start: d1.last_seen_at (t=0) < cutoff → pruned
+    // d2.last_seen_at (t=70d) > cutoff → kept
+    const cutoff = 1_000_000_000_000 + 60 * 24 * 60 * 60 * 1000
+    const removed = devices.deleteUnseenSince(cutoff)
+    expect(removed).toBe(1)
+    expect(devices.findById(d1.id)).toBeNull()
+    expect(devices.findById(d2.id)).not.toBeNull()
+  })
+
+  test('deleteUnseenSince cascades pending_deliveries rows of pruned devices', () => {
+    let clock = 1_000_000_000_000
+    const db = openDb(':memory:')
+    const users = createUsersStore(db, () => clock)
+    const devices = createDevicesStore(db, () => clock)
+    const pending = createPendingDeliveriesStore(db, () => clock)
+    const user = users.upsertByGoogleSub({ sub: 'g1', email: 'alice@example.com', name: 'Alice' })
+
+    const stale = devices.create(user.id, 'Stale Mac')
+    pending.enqueue(stale.id, 1)
+    pending.enqueue(stale.id, 2)
+    expect(pending.listByDevice(stale.id)).toHaveLength(2)
+
+    // advance past cutoff
+    clock += 70 * 24 * 60 * 60 * 1000
+    const cutoff = 1_000_000_000_000 + 60 * 24 * 60 * 60 * 1000
+    devices.deleteUnseenSince(cutoff)
+
+    // FK CASCADE wiped the pending rows
+    expect(pending.listByDevice(stale.id)).toHaveLength(0)
+  })
+
+  test('deleteUnseenSince returns 0 when no devices are stale', () => {
+    const { devices, user } = setup()
+    devices.create(user.id, 'Mac A')
+    // cutoff in the past relative to recently-created device
+    expect(devices.deleteUnseenSince(0)).toBe(0)
   })
 })

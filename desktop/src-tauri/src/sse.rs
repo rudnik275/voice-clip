@@ -1,4 +1,5 @@
-//! Long-lived SSE client for `GET /events?device_token=<token>`.
+//! Long-lived SSE client for `GET /events` (authenticated via `X-Device-Token`
+//! header).
 //!
 //! Runs on a dedicated std thread (blocking reqwest) so the never-ending
 //! stream read never blocks Tauri's event loop. On every `data:` frame it
@@ -140,13 +141,13 @@ where
                 ConnStatus::Reconnecting
             });
 
-            let url = format!(
-                "{}/events?device_token={}",
-                base_url.trim_end_matches('/'),
-                urlencode(&device_token)
-            );
+            let url = format!("{}/events", base_url.trim_end_matches('/'));
 
-            match client.get(&url).send() {
+            match client
+                .get(&url)
+                .header("X-Device-Token", &device_token)
+                .send()
+            {
                 Ok(resp) if resp.status().is_success() => {
                     attempt = 0;
                     on_status(ConnStatus::Connected);
@@ -222,21 +223,6 @@ fn ack(client: &reqwest::blocking::Client, base_url: &str, token: &str, seq: i64
         .send();
 }
 
-/// Minimal percent-encoding for the token query value (hex tokens are
-/// already URL-safe; this is defensive against any non-hex token shape).
-fn urlencode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,17 +234,6 @@ mod tests {
             let d = backoff_delay(attempt).as_millis() as u64;
             assert!(d <= BACKOFF_CAP_MS, "attempt {attempt} exceeded cap: {d}");
         }
-    }
-
-    #[test]
-    fn urlencode_passes_hex_through_untouched() {
-        let tok = "deadbeef0123456789abcdef";
-        assert_eq!(urlencode(tok), tok);
-    }
-
-    #[test]
-    fn urlencode_escapes_unsafe_bytes() {
-        assert_eq!(urlencode("a/b c"), "a%2Fb%20c");
     }
 
     #[test]
