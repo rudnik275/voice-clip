@@ -1163,6 +1163,23 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
         )
       }
 
+      // ---- /devices/me (device-token auth) ----
+      // The Tauri desktop app signs itself out by revoking the CALLING device.
+      // Authenticated by the device_token (X-Device-Token / ?device_token=),
+      // NOT a session cookie — the desktop webview has no session. Mirrors the
+      // session-scoped DELETE /devices/:id below, but self-scoped: the token
+      // identifies exactly which device to revoke, so there's no id to leak.
+      // MUST be matched before the generic /devices/ prefix below (otherwise
+      // "me" would be treated as a device id under session auth and 404).
+      if (pathname === '/devices/me') {
+        if (method !== 'DELETE') return new Response('Method Not Allowed', { status: 405 })
+        const device = resolveDeviceFromRequest(req, devices)
+        if (!device) return unauthorized()
+        devices.revoke(device.id)
+        liveBus.disconnect(device.id)
+        return Response.json({ ok: true })
+      }
+
       // ---- /devices/:id (session auth) ----
       // Revoke a paired Mac. The ownership gate returns an IDENTICAL 404 for
       // "no such device" and "not your device" — never leak whether an id

@@ -65,6 +65,15 @@ if (tauri) {
     // Always listen for `paired` — covers the cold-paired case AND the
     // re-pair-after-sign-out case.
     void tauri.event.listen('paired', () => window.location.reload())
+    // `signed_out` is emitted by BOTH Rust sign-out paths (the webview
+    // `sign_out` command AND the tray "Logout" item) and by the SSE
+    // auth-failure handler (device revoked from another client → 401). Drop
+    // the cached (now-dead) token so no further fetch carries it, and flip the
+    // webview to the pairing splash without an app restart.
+    void tauri.event.listen('signed_out', () => {
+      tokenPromise = Promise.resolve(null)
+      showPairingSplash()
+    })
   })()
 
   const realFetch = window.fetch.bind(window)
@@ -149,10 +158,15 @@ export function tauriRedirectToLogin(): boolean {
 
 // Replaces the `fetch('/logout') + redirect` flow from app.ts when running
 // under Tauri. The server-side session doesn't exist for Tauri devices;
-// instead the Rust `sign_out` command revokes the device, wipes the
-// Keychain, and flips the webview back to the SignedOut view.
+// instead the Rust `sign_out` command revokes the device (DELETE
+// /devices/me), wipes the Keychain, resets the tray, and emits `signed_out`
+// — which the listener above turns into a pairing-splash transition. We also
+// reset the cached token here (belt-and-braces alongside the `signed_out`
+// listener) so no in-flight fetch can pick up the now-revoked token even
+// before the event round-trips.
 export async function tauriSignOut(): Promise<boolean> {
   if (!tauri) return false
+  tokenPromise = Promise.resolve(null)
   await tauri.core.invoke('sign_out').catch(() => {})
   return true
 }

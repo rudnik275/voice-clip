@@ -220,6 +220,58 @@ describe('devices API: GET /devices + DELETE /devices/:id', () => {
     expect(pending.listByDevice(d.id)).toEqual([])
   })
 
+  test('DELETE /devices/me without a device token → 401', async () => {
+    await start()
+    const r = await fetch(`${baseUrl}/devices/me`, { method: 'DELETE' })
+    expect(r.status).toBe(401)
+  })
+
+  test('DELETE /devices/me revokes ONLY the calling device (device-token auth)', async () => {
+    await start()
+    const users = createUsersStore(db)
+    const me = users.upsertByGoogleSub({ sub: 'g1', email: 'alice@example.com', name: 'Alice' })
+    const devices = createDevicesStore(db)
+    const caller = devices.create(me.id, 'This Mac')
+    const other = devices.create(me.id, 'Other Mac')
+
+    const del = await fetch(`${baseUrl}/devices/me`, {
+      method: 'DELETE',
+      headers: { 'X-Device-Token': caller.device_token },
+    })
+    expect(del.status).toBe(200)
+    expect(await del.json()).toEqual({ ok: true })
+
+    // Only the caller's device is gone; the user's other device survives.
+    expect(devices.findById(caller.id)).toBeNull()
+    expect(devices.findById(other.id)).not.toBeNull()
+  })
+
+  test('DELETE /devices/me aborts the calling device live SSE stream', async () => {
+    await start()
+    const users = createUsersStore(db)
+    const me = users.upsertByGoogleSub({ sub: 'g1', email: 'alice@example.com', name: 'Alice' })
+    const devices = createDevicesStore(db)
+    const caller = devices.create(me.id, 'This Mac')
+
+    let errored = false
+    const controller = {
+      enqueue(_chunk: Uint8Array) {},
+      error(_e?: unknown) {
+        errored = true
+      },
+      close() {},
+    }
+    liveBus.subscribe(caller.id, controller)
+
+    const del = await fetch(`${baseUrl}/devices/me`, {
+      method: 'DELETE',
+      headers: { 'X-Device-Token': caller.device_token },
+    })
+    expect(del.status).toBe(200)
+    expect(errored).toBe(true)
+    expect(liveBus.publish(caller.id, { seq: 1 })).toBe(false)
+  })
+
   test('DELETE closes the device live SSE stream so the Tauri app re-auths', async () => {
     await start()
     const token = await signIn(baseUrl)

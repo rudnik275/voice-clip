@@ -106,8 +106,10 @@ const isExhausted = computed<boolean>(() => {
 async function signOut() {
   if (!confirm('Sign out?')) return
   if (IS_TAURI) {
-    // Tauri owns sign-out: tear down SSE worker + wipe Keychain. The Rust
-    // `sign_out` command also flips the webview back to the pairing view.
+    // Tauri owns sign-out: the Rust `sign_out` command tears down the SSE
+    // worker, revokes the device, wipes the Keychain, and emits `signed_out`.
+    // The tauri-runtime `signed_out` listener clears the cached token and
+    // flips the webview back to the pairing splash — no manual navigation here.
     emit('close')
     await tauriSignOut()
     return
