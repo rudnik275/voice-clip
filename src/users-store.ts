@@ -80,12 +80,15 @@ export function createUsersStore(db: DB, now: () => number = Date.now): UsersSto
       const existing = selectBySub.get(input.sub)
       const ts = now()
       const picture = input.picture_url ?? null
+      // Normalize email at write time so findByEmail (which lowercases the
+      // query) can always find the row regardless of the casing Google returns.
+      const email = input.email.trim().toLowerCase()
       if (existing) {
-        const updated = updateUser.get(input.email, input.name, picture, ts, input.sub)
+        const updated = updateUser.get(email, input.name, picture, ts, input.sub)
         // updated is non-null because the row exists; non-null assertion is safe.
         return rowToUser(updated as UserRow)
       }
-      const inserted = insertUser.get(newUserId(), input.sub, input.email, input.name, picture, ts, ts)
+      const inserted = insertUser.get(newUserId(), input.sub, email, input.name, picture, ts, ts)
       return rowToUser(inserted as UserRow)
     },
 

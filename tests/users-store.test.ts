@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach } from 'bun:test'
-import { openDb } from '../src/db'
+import { openDb, tryAddColumn, type DB } from '../src/db'
 import { createUsersStore, type User } from '../src/users-store'
 
 describe('users-store (SQLite, get-or-create by google_sub)', () => {
@@ -104,5 +104,91 @@ describe('users-store (SQLite, get-or-create by google_sub)', () => {
     const u = s.upsertByGoogleSub({ sub: 'g-sub-1', email: 'a@x.com', name: 'A' })
     expect(u.created_at).toBe(fixed)
     expect(u.updated_at).toBe(fixed)
+  })
+})
+
+describe('users-store: email normalization', () => {
+  let db: DB
+  let store: ReturnType<typeof createUsersStore>
+
+  beforeEach(() => {
+    db = openDb(':memory:')
+    store = createUsersStore(db)
+  })
+
+  test('upsert with mixed-case email → findByEmail with lowercase finds user', () => {
+    store.upsertByGoogleSub({ sub: 'g-norm-1', email: 'Alice@Example.com', name: 'Alice' })
+    const found = store.findByEmail('alice@example.com')
+    expect(found).not.toBeNull()
+    expect(found!.name).toBe('Alice')
+  })
+
+  test('upsert with mixed-case email → findByEmail with uppercase finds user', () => {
+    store.upsertByGoogleSub({ sub: 'g-norm-2', email: 'Alice@Example.com', name: 'Alice' })
+    const found = store.findByEmail('ALICE@EXAMPLE.COM')
+    expect(found).not.toBeNull()
+    expect(found!.name).toBe('Alice')
+  })
+
+  test('stored email is always lowercase regardless of input casing', () => {
+    const u = store.upsertByGoogleSub({ sub: 'g-norm-3', email: 'Bob@Example.COM', name: 'Bob' })
+    expect(u.email).toBe('bob@example.com')
+  })
+
+  test('update path also normalizes email (second upsert)', () => {
+    store.upsertByGoogleSub({ sub: 'g-norm-4', email: 'carol@example.com', name: 'Carol' })
+    // Simulate Google returning mixed-case on second login
+    const u2 = store.upsertByGoogleSub({ sub: 'g-norm-4', email: 'Carol@Example.COM', name: 'Carol' })
+    expect(u2.email).toBe('carol@example.com')
+    const found = store.findByEmail('carol@example.com')
+    expect(found).not.toBeNull()
+  })
+})
+
+describe('openDb: PRAGMA busy_timeout', () => {
+  test('busy_timeout is set to 5000 ms on :memory: DB', () => {
+    const db = openDb(':memory:')
+    const row = db.query<{ timeout: number }, []>('PRAGMA busy_timeout').get()
+    expect(row).not.toBeNull()
+    expect(row!.timeout).toBe(5000)
+    db.close()
+  })
+})
+
+describe('openDb: migration idempotency', () => {
+  test('opening the same file twice succeeds (duplicate-column path swallowed)', async () => {
+    const { mkdtemp, rm } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const dir = await mkdtemp(join(tmpdir(), 'voice-clip-db-migrate-'))
+    try {
+      const path = join(dir, 'test.sqlite')
+      // First open runs all migrations
+      const db1 = openDb(path)
+      db1.close()
+      // Second open re-runs migrations — duplicate-column errors must be swallowed
+      expect(() => openDb(path)).not.toThrow()
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('tryAddColumn: error propagation', () => {
+  test('swallows "duplicate column name" errors', () => {
+    const db = openDb(':memory:')
+    // Add a column once (succeeds)
+    db.exec('CREATE TABLE t (id INTEGER PRIMARY KEY)')
+    tryAddColumn(db, 'ALTER TABLE t ADD COLUMN foo TEXT')
+    // Run again — duplicate column, should be swallowed
+    expect(() => tryAddColumn(db, 'ALTER TABLE t ADD COLUMN foo TEXT')).not.toThrow()
+    db.close()
+  })
+
+  test('rethrows errors that are NOT about duplicate columns', () => {
+    const db = openDb(':memory:')
+    // This SQL is syntactically invalid — triggers an error unrelated to duplicate columns
+    expect(() => tryAddColumn(db, 'ALTER TABLE nonexistent_table ADD COLUMN x TEXT')).toThrow()
+    db.close()
   })
 })
