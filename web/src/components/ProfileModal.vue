@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useSessionStore, type Me } from '../stores/session'
-import { isMuted, setMuted, playCopy } from '../../sounds'
+import { isMuted, setMuted, unlockAudio, playCopy } from '../../sounds'
 import { IS_TAURI, tauriSignOut } from '../../tauri-runtime'
 import { fetchDevices, revokeDevice, generateInvite, type DeviceRow } from '../api/devices'
 import { armClipboardWrite } from '../lib/clipboard'
@@ -20,6 +20,11 @@ const muted = ref(isMuted())
 function toggleSounds() {
   setMuted(!muted.value)
   muted.value = isMuted()
+  // When unmuting, call unlockAudio() right here in the click handler so
+  // iOS WebAudio is primed while we're still inside the user gesture — the
+  // next play call (e.g. the success bell on upload) may fire outside a
+  // gesture and would be silently dropped without this.
+  if (!muted.value) unlockAudio()
 }
 
 // ---- quota chip (mirrors old app.ts paintQuotaChip) ----
@@ -136,6 +141,10 @@ watch(
     if (val) {
       muted.value = isMuted() // refresh from localStorage on each open
       void loadDevices()
+      // Refresh the session so the quota chip shows current usage — not just
+      // the values from app load. refresh() leaves status='authenticated'
+      // (unlike load()), so the app shell stays mounted.
+      void session.refresh()
     }
   },
 )
