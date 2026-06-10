@@ -16,6 +16,7 @@ class FakeAudioAdapter implements AudioAdapter {
   contextOpen = false;
   finalizeCount = 0;
   acquireShouldFail = false;
+  startShouldThrow = false;
 
   private finalizeResolvers: Array<(c: RecordedClip) => void> = [];
 
@@ -28,6 +29,7 @@ class FakeAudioAdapter implements AudioAdapter {
   }
   start(timesliceMs: number): void {
     this.calls.push(`start(${timesliceMs})`);
+    if (this.startShouldThrow) throw new Error('MediaRecorder unsupported');
     this.startTimeslices.push(timesliceMs);
   }
   pause(): void {
@@ -152,6 +154,41 @@ describe('RecorderMachine — mic failure', () => {
     machine.send('RESET');
     expect(machine.state).toBe('idle');
     expect(adapter.calls).toContain('closeContext');
+  });
+});
+
+describe('RecorderMachine — start() throw routes to error (issue #135)', () => {
+  test('a synchronous throw from adapter.start() ends in error, never recording', async () => {
+    const { machine, adapter } = make();
+    adapter.startShouldThrow = true;
+    machine.send('TAP');
+    await machine.settled();
+    // must NOT be stranded in 'recording' with no live recorder
+    expect(machine.state).toBe('error');
+    expect(machine.snapshot().error).toBe('MediaRecorder unsupported');
+  });
+
+  test('start() throw tears down via closeContext and RESET returns to idle', async () => {
+    const { machine, adapter } = make();
+    adapter.startShouldThrow = true;
+    machine.send('TAP');
+    await machine.settled();
+    expect(machine.state).toBe('error');
+    // error path cleaned up the stream/context immediately
+    expect(adapter.calls).toContain('closeContext');
+    expect(adapter.contextOpen).toBe(false);
+    machine.send('RESET');
+    expect(machine.state).toBe('idle');
+  });
+
+  test('transition log records the internal START_FAILED edge', async () => {
+    const { machine, adapter } = make();
+    adapter.startShouldThrow = true;
+    machine.send('TAP');
+    await machine.settled();
+    expect(machine.transitionLog()).toContainEqual(
+      expect.objectContaining({ from: 'recording', event: 'START_FAILED', to: 'error' }),
+    );
   });
 });
 
