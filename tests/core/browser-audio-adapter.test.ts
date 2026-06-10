@@ -74,11 +74,21 @@ let lastRecorder: FakeMediaRecorder | null = null;
 
 class FakeAudioContext {
   static instances: FakeAudioContext[] = [];
+  /** when set, new contexts boot in this state (default 'running'). */
+  static initialState: 'running' | 'suspended' = 'running';
   closed = false;
   primedBuffers = 0;
   destination = {};
+  state: 'running' | 'suspended' | 'closed';
+  resumeCalls = 0;
   constructor() {
+    this.state = FakeAudioContext.initialState;
     FakeAudioContext.instances.push(this);
+  }
+  resume() {
+    this.resumeCalls++;
+    this.state = 'running';
+    return Promise.resolve();
   }
   createAnalyser() {
     return {
@@ -108,6 +118,7 @@ class FakeAudioContext {
   }
   close() {
     this.closed = true;
+    this.state = 'closed';
     return Promise.resolve();
   }
 }
@@ -118,6 +129,7 @@ function installGlobals() {
   lastRecorder = null;
   currentStream = null;
   FakeAudioContext.instances = [];
+  FakeAudioContext.initialState = 'running';
   FakeMediaRecorder.supported = new Set(['audio/mp4']);
   FakeMediaRecorder.suppressOnstop = false;
 
@@ -274,6 +286,112 @@ describe('BrowserAudioAdapter — iOS invariants', () => {
     expect(a.isTrackLive()).toBe(true);
     currentStream!.getTracks()[0]!.readyState = 'ended';
     expect(a.isTrackLive()).toBe(false);
+  });
+});
+
+// ---- issue #135: adapter lifecycle (stale handlers + suspended context) ----
+
+describe('BrowserAudioAdapter — finalize detaches handlers (issue #135)', () => {
+  test('a late dataavailable from a finalized recorder cannot pollute the next session', async () => {
+    // Force the 800ms-timeout path (onstop never fires) — the exact Safari
+    // freeze the timer guards against, and where a late event from the old
+    // recorder used to land in the next session's chunks.
+    FakeMediaRecorder.suppressOnstop = true;
+    const a = new BrowserAudioAdapter();
+    await a.acquire();
+    a.start(250);
+    const oldRec = lastRecorder!;
+    oldRec.ondataavailable?.({ data: new Blob([new Uint8Array([1, 1, 1, 1])]) });
+    const firstClip = await a.finalize();
+    expect(firstClip.blob.size).toBe(4);
+
+    // After finalize resolves, the OLD recorder's handlers must be detached so
+    // a late dataavailable is inert.
+    expect(oldRec.ondataavailable).toBeNull();
+    expect(oldRec.onstop).toBeNull();
+
+    // Start a NEW session, fire the OLD recorder's (now-detached) handler if it
+    // somehow still held a reference, then feed only the new session's chunk.
+    FakeMediaRecorder.suppressOnstop = false;
+    a.start(250);
+    // simulate a stray late event referencing the old handler shape — must be a
+    // no-op because we detached it; calling null is guarded by `?.`
+    oldRec.ondataavailable?.({ data: new Blob([new Uint8Array([7, 7, 7, 7, 7, 7])]) });
+    const newRec = lastRecorder!;
+    newRec.ondataavailable?.({ data: new Blob([new Uint8Array([2, 2])]) });
+    const secondClip = await a.finalize();
+    // ONLY the new session's 2-byte chunk — no stale old-container fragment
+    expect(secondClip.blob.size).toBe(2);
+  });
+
+  test('start() detaches a prior recorder defensively (finalize skipped)', async () => {
+    const a = new BrowserAudioAdapter();
+    await a.acquire();
+    a.start(250);
+    const oldRec = lastRecorder!;
+    expect(oldRec.ondataavailable).not.toBeNull();
+    // start again WITHOUT finalizing — old recorder's handlers must be detached
+    a.start(250);
+    expect(oldRec.ondataavailable).toBeNull();
+    expect(oldRec.onstop).toBeNull();
+  });
+
+  test('onstop path clears the fallback timer (no late done effect)', async () => {
+    // onstop wins the race; the 800ms timer must be cleared. We assert the
+    // resolved clip is stable and a subsequent timer-fire would be a no-op
+    // (settled flag + cleared timer). Use a spy on clearTimeout.
+    const realClear = globalThis.clearTimeout;
+    let clears = 0;
+    (globalThis as any).clearTimeout = (id: any) => {
+      clears++;
+      return realClear(id);
+    };
+    try {
+      const a = new BrowserAudioAdapter();
+      await a.acquire();
+      a.start(250);
+      lastRecorder!.ondataavailable?.({ data: new Blob([new Uint8Array([5])]) });
+      await a.finalize(); // onstop fires (suppressOnstop=false) → done() clears timer
+      expect(clears).toBeGreaterThanOrEqual(1);
+    } finally {
+      (globalThis as any).clearTimeout = realClear;
+    }
+  });
+
+  test('closeContext detaches a never-finalized recorder (start threw upstream)', async () => {
+    const a = new BrowserAudioAdapter();
+    await a.acquire();
+    a.start(250);
+    const rec = lastRecorder!;
+    a.closeContext();
+    expect(rec.ondataavailable).toBeNull();
+    expect(rec.onstop).toBeNull();
+  });
+});
+
+describe('BrowserAudioAdapter — suspended AudioContext is resumed (issue #135)', () => {
+  test('acquire() (startMetering) resumes a suspended context', async () => {
+    FakeAudioContext.initialState = 'suspended';
+    const a = new BrowserAudioAdapter();
+    await a.acquire();
+    const ctx = FakeAudioContext.instances[0]!;
+    expect(ctx.resumeCalls).toBeGreaterThanOrEqual(1);
+    expect(ctx.state).toBe('running');
+  });
+
+  test('primeAudioSession() resumes a suspended context before playing', async () => {
+    FakeAudioContext.initialState = 'suspended';
+    const a = new BrowserAudioAdapter();
+    await a.acquire(); // creates + resumes the ctx in startMetering
+    const ctx = FakeAudioContext.instances[0]!;
+    // pretend the OS suspended it again between acquire and prime
+    ctx.state = 'suspended';
+    const resumesBefore = ctx.resumeCalls;
+    a.primeAudioSession();
+    expect(ctx.resumeCalls).toBeGreaterThan(resumesBefore);
+    expect(ctx.state as string).toBe('running');
+    // the prime play still happened (on the now-running context)
+    expect(ctx.primedBuffers).toBeGreaterThan(0);
   });
 });
 

@@ -86,6 +86,14 @@ export class BrowserAudioAdapter implements AudioAdapter {
   /** invariant 5: start(250) so iOS doesn't drop tails on background/abrupt stop. */
   start(timesliceMs: number = TIMESLICE_MS): void {
     if (!this.stream) throw new Error('acquire() must precede start()');
+    // Defensive: if a prior recorder is still around (finalize skipped, or a
+    // crashed session), detach its handlers so a late dataavailable from the
+    // OLD recorder can't push into the chunks array we're about to reset for
+    // the new session (corrupt mixed-container blob — issue #135).
+    if (this.recorder) {
+      this.recorder.ondataavailable = null;
+      this.recorder.onstop = null;
+    }
     const rec = new MediaRecorder(this.stream, this.mime ? { mimeType: this.mime } : undefined);
     this.recorder = rec;
     this.chunks = [];
@@ -133,6 +141,11 @@ export class BrowserAudioAdapter implements AudioAdapter {
     try {
       const ctx = this.audioCtx ?? new (getAudioContextCtor())();
       this.audioCtx = ctx;
+      // On iOS Safari a context created/reused outside the original tap gesture
+      // can be 'suspended' — priming into a suspended context is a silent no-op.
+      // Resume first so the prime actually wakes the audio session (issue #135;
+      // mirrors web/sounds.ts).
+      this.resumeIfSuspended(ctx);
       const buffer = ctx.createBuffer(1, 1, 22050);
       const src = ctx.createBufferSource();
       src.buffer = buffer;
@@ -153,9 +166,22 @@ export class BrowserAudioAdapter implements AudioAdapter {
     const mime = rec?.mimeType || this.mime;
     return new Promise<RecordedClip>((resolve) => {
       let settled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
       const done = () => {
         if (settled) return;
         settled = true;
+        // Clear the fallback timer when onstop wins (and is harmless when the
+        // timeout itself fired). Detach the recorder's handlers BEFORE resolving
+        // so a late dataavailable/onstop from THIS (now finalized) recorder can
+        // never touch a newer session's chunks (issue #135).
+        if (timer !== null) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        if (rec) {
+          rec.ondataavailable = null;
+          rec.onstop = null;
+        }
         this.stopMetering();
         for (const t of this.stream?.getTracks() ?? []) t.stop();
         const blob = new Blob(this.chunks, mime ? { type: mime } : undefined);
@@ -173,7 +199,7 @@ export class BrowserAudioAdapter implements AudioAdapter {
       };
       if (rec) {
         rec.onstop = done;
-        setTimeout(done, FINALIZE_TIMEOUT_MS); // the race
+        timer = setTimeout(done, FINALIZE_TIMEOUT_MS); // the race
         try {
           rec.stop();
         } catch {
@@ -198,6 +224,13 @@ export class BrowserAudioAdapter implements AudioAdapter {
     }
     for (const t of this.stream?.getTracks() ?? []) t.stop();
     this.stream = null;
+    // Detach handlers before dropping the reference so a late event from a
+    // recorder we never finalized (e.g. start() threw → error → RESET) can't
+    // mutate chunks afterwards (issue #135).
+    if (this.recorder) {
+      this.recorder.ondataavailable = null;
+      this.recorder.onstop = null;
+    }
     this.recorder = null;
     this.chunks = [];
   }
@@ -214,9 +247,24 @@ export class BrowserAudioAdapter implements AudioAdapter {
 
   // ---- metering (uses pure helpers from meters.ts) -----------------------
 
+  /**
+   * iOS Safari hands back a 'suspended' AudioContext when it's created/resumed
+   * outside a user-gesture tick. A suspended context yields a flat analyser
+   * (dead meter + pure-silence gate stats → every clip rejected) and swallows
+   * the priming play. Resume it (best-effort, async) wherever we touch the ctx.
+   */
+  private resumeIfSuspended(ctx: AudioContext): void {
+    try {
+      if (ctx.state === 'suspended') void ctx.resume();
+    } catch {
+      // resume() can reject if the context is closing — best-effort only
+    }
+  }
+
   private startMetering(stream: MediaStream): void {
     const ctx = this.audioCtx ?? new (getAudioContextCtor())();
     this.audioCtx = ctx;
+    this.resumeIfSuspended(ctx);
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 2048;
     ctx.createMediaStreamSource(stream).connect(analyser);

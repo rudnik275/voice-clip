@@ -51,7 +51,7 @@ export const TIMESLICE_MS = 250;
  * the transition log so it stays truthful. `FINALIZED` marks the adapter's
  * onstop-or-800ms-timeout completion driving finalizing → transcribing.
  */
-export type InternalEvent = 'FINALIZED';
+export type InternalEvent = 'FINALIZED' | 'START_FAILED';
 
 /** A transition log entry carries either a public event or an internal one. */
 export type TransitionEntry = {
@@ -205,8 +205,14 @@ export class RecorderMachine {
             if (this._state === 'acquiring') this.send('MIC_OK');
           })
           .catch((err: unknown) => {
+            // A synchronous throw from adapter.start() inside the MIC_OK effect
+            // propagates here, but by then state is already 'recording' (start
+            // ran in the transition) — that case is handled directly in the
+            // MIC_OK effect below. Only treat this as a mic-acquisition failure
+            // while we're still 'acquiring'.
+            if (this._state !== 'acquiring') return;
             this._error = err instanceof Error ? err.message : String(err);
-            if (this._state === 'acquiring') this.send('MIC_FAIL');
+            this.send('MIC_FAIL');
           }),
       );
       return;
@@ -214,7 +220,26 @@ export class RecorderMachine {
 
     // acquiring --MIC_OK--> recording : start(250) (invariant 5)
     if (from === 'acquiring' && event === 'MIC_OK') {
-      this.adapter.start(TIMESLICE_MS);
+      try {
+        this.adapter.start(TIMESLICE_MS);
+      } catch (err: unknown) {
+        // A synchronous throw here (NotSupportedError from `new MediaRecorder`,
+        // InvalidStateError from rec.start() if the track died between acquire
+        // and start) must NEVER leave us claiming to be recording with no live
+        // recorder. Route straight to the error state and tear down the stream/
+        // context so RESET starts clean. Mirrors the MIC_FAIL error path.
+        this._error = err instanceof Error ? err.message : String(err);
+        try {
+          this.adapter.closeContext();
+        } catch {
+          // teardown is best-effort; we're already heading to error
+        }
+        // internal transition (keeps the public event surface unchanged; the
+        // throw came from inside the MIC_OK effect, not a separate event)
+        if (this._state === 'recording') {
+          this.transition('recording', 'START_FAILED', 'error');
+        }
+      }
       return;
     }
 
