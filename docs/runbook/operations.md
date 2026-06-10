@@ -155,6 +155,21 @@ ssh deploy@46.62.229.131 \
 
 ---
 
+## Retention defaults
+
+Data rows are pruned automatically via lazy daily sweeps triggered on write (at most once per 24 h per process). No manual intervention is needed under normal operation.
+
+| Table / store           | Retention window | Triggered on          | Source constant |
+| ----------------------- | ---------------- | --------------------- | --------------- |
+| `errors`                | **30 days**      | `errorsStore.insert()` | `ERRORS_RETENTION_MS` in `src/errors-store.ts` |
+| `sessions`              | **90 days idle** | `sessionsStore.create()` | `SESSION_TTL_MS` in `src/sessions-store.ts` |
+| `pending_deliveries`    | **7 days**       | `pendingDeliveriesStore.enqueue()` | `PENDING_DELIVERIES_RETENTION_MS` in `src/pending-deliveries-store.ts` |
+| `failed-audio/` (files) | **14 days**      | `failedAudioStore.save()` | `RETENTION_MS` in `src/failed-audio-store.ts` |
+
+The history and costs tables have **no automatic age cap** — they are the canonical user record and are only cleared by the user via **DELETE /history** (which also clears that user's pending-delivery queue).
+
+---
+
 ## Quick health checks
 
 ```sh

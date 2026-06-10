@@ -25,6 +25,8 @@
 import type { DB } from './db'
 import { randomBytes } from 'node:crypto'
 
+export const PENDING_DELIVERIES_RETENTION_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
+
 export type DeliverySource = 'online' | 'offline'
 
 export interface PendingDeliveriesStore {
@@ -32,6 +34,8 @@ export interface PendingDeliveriesStore {
   listByDevice(deviceId: string): { seq: number; source: DeliverySource }[]
   deleteBySeq(deviceId: string, seq: number): void
   deleteByDevice(deviceId: string): void
+  deleteByUser(userId: string): void
+  deleteOlderThan(cutoffMs: number): number
 }
 
 interface PendingRow {
@@ -61,9 +65,27 @@ export function createPendingDeliveriesStore(
   const deleteDeviceStmt = db.prepare(
     'DELETE FROM pending_deliveries WHERE device_id = ?',
   )
+  const deleteUserStmt = db.prepare(
+    'DELETE FROM pending_deliveries WHERE device_id IN (SELECT id FROM devices WHERE user_id = ?)',
+  )
+  const deleteOlderStmt = db.prepare(
+    'DELETE FROM pending_deliveries WHERE created_at < ?',
+  )
+
+  // Lazy daily sweep: at most once per 24 h, purge rows older than PENDING_DELIVERIES_RETENTION_MS.
+  const SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000
+  let lastSweepAt = 0
+
+  function maybeSweep(): void {
+    const ts = now()
+    if (ts - lastSweepAt < SWEEP_INTERVAL_MS) return
+    lastSweepAt = ts
+    deleteOlderStmt.run(ts - PENDING_DELIVERIES_RETENTION_MS)
+  }
 
   return {
     enqueue(deviceId: string, seq: number, source: DeliverySource = 'online'): void {
+      maybeSweep()
       insert.run(newPendingId(), deviceId, seq, source, now())
     },
 
@@ -77,6 +99,15 @@ export function createPendingDeliveriesStore(
 
     deleteByDevice(deviceId: string): void {
       deleteDeviceStmt.run(deviceId)
+    },
+
+    deleteByUser(userId: string): void {
+      deleteUserStmt.run(userId)
+    },
+
+    deleteOlderThan(cutoffMs: number): number {
+      const result = deleteOlderStmt.run(cutoffMs)
+      return Number(result.changes)
     },
   }
 }
