@@ -1,0 +1,16 @@
+{
+  "extends": "../../web/tsconfig.json",
+  "compilerOptions": {
+    // Web SFC/store code needs DOM; the tests additionally need Bun's test
+    // runtime types (bun:test, the global fetch/Response, mock()).
+    "types": ["bun", "vite/client"],
+    // Path alias is resolved relative to baseUrl; point it back at web/src so
+    // `@/...` imports inside the web modules these tests pull in still resolve.
+    "baseUrl": "../../web",
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": ["**/*.ts"],
+  "exclude": ["../../node_modules"]
+}

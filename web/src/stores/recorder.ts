@@ -6,6 +6,7 @@ import { BrowserAudioAdapter } from '../../../core/browser-audio-adapter'
 import { createUploader } from '../../../core/uploader'
 import type { SendResult } from '../../../core/uploader'
 import type { Uploader } from '../../../core/ports'
+import { handleUnauthorized } from './session'
 import {
   playStartRec,
   playStopRec,
@@ -82,6 +83,12 @@ export const useRecorderStore = defineStore('recorder', () => {
   // failure. The client does NOT send presetId (uploader builds the form).
   const send = async (form: FormData): Promise<SendResult> => {
     const r = await fetch('/upload', { method: 'POST', body: form, credentials: 'include' })
+    // Session revoked mid-use → funnel into the login/sign-out path instead of
+    // letting the core uploader classify the 401 as a permanent 4xx and toast
+    // the raw server body (#136). The funnel is idempotent, so a burst of
+    // concurrent 401s only redirects once. We still return the result so the
+    // uploader/FSM unwind cleanly while the redirect takes over.
+    if (r.status === 401) handleUnauthorized()
     let text = ''
     try {
       const body = (await r.json()) as { text?: string; error?: string }
