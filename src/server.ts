@@ -160,6 +160,52 @@ function escapeHtml(s: string): string {
     .replace(/'/g, '&#39;')
 }
 
+/**
+ * Derive a rate-limiting key for /api/errors from the direct socket address
+ * and (optionally) forwarding headers.
+ *
+ * Trust model:
+ *   - If the direct peer is a loopback or RFC-1918/RFC-4193 private address
+ *     (127.x, ::1, 10.x, 172.16-31.x, 192.168.x, fc00::/7) we consider it a
+ *     trusted proxy hop (in production: the Cloudflare Tunnel sidecar).  In
+ *     that case CF-Connecting-IP (set by Cloudflare, not the browser) is used
+ *     as the key — it reflects the real public client IP.
+ *   - For any other (public/routable) peer we use the raw socket address and
+ *     ignore forwarding headers entirely — they are attacker-controlled.
+ *   - If socketAddr is null/empty, fall back to 'unknown'.
+ */
+export function deriveRateKey(
+  socketAddr: string | null | undefined,
+  headers: Headers,
+): string {
+  if (!socketAddr) return 'unknown'
+  if (isTrustedPeer(socketAddr)) {
+    const cf = headers.get('cf-connecting-ip')?.trim()
+    if (cf) return cf
+    const xff = headers.get('x-forwarded-for')?.split(',')[0]?.trim()
+    if (xff) return xff
+    return socketAddr
+  }
+  return socketAddr
+}
+
+/** Returns true if the address is loopback or a private/ULA range. */
+function isTrustedPeer(addr: string): boolean {
+  // IPv4 loopback
+  if (addr === '127.0.0.1' || addr.startsWith('127.')) return true
+  // IPv4 private
+  if (addr.startsWith('10.')) return true
+  if (addr.startsWith('192.168.')) return true
+  const m172 = addr.match(/^172\.(\d+)\./)
+  if (m172 && Number(m172[1]) >= 16 && Number(m172[1]) <= 31) return true
+  // IPv6 loopback
+  if (addr === '::1') return true
+  // IPv6 ULA (fc00::/7 = fc00:: – fdff::)
+  const lcAddr = addr.toLowerCase()
+  if (lcAddr.startsWith('fc') || lcAddr.startsWith('fd')) return true
+  return false
+}
+
 export async function startServer(deps: ServerDeps): Promise<RunningServer> {
   const useTls = deps.useTls ?? false
   // Cookies must carry the `Secure` flag whenever the BROWSER-facing scheme
@@ -213,12 +259,27 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
   }
   const liveBus = deps.liveBus ?? createLiveBus()
 
-  // Simple per-IP rate limit for /api/errors. The endpoint is unauthed so
-  // it can catch pre-login crashes; in exchange we cap a single IP at 60
-  // reports per rolling minute (generous — real crashes don't loop fast).
+  // Per-IP rate limit for /api/errors. The endpoint is intentionally unauthed
+  // so the login page can report crashes; in exchange we cap at 60 req/min per
+  // derived key plus a global backstop of 600 req/min across all keys.
+  //
+  // Key derivation strategy (see deriveRateKey below):
+  //   - In production the app sits behind a Cloudflare Tunnel sidecar on the
+  //     same Docker network — the direct TCP peer is always a loopback or
+  //     private address. From such a trusted hop we honour CF-Connecting-IP
+  //     (Cloudflare sets it, the tunnel forwards it, clients cannot spoof it
+  //     without going through Cloudflare).
+  //   - For a direct (non-tunnel) connection (public/routable peer) we use the
+  //     raw socket address and IGNORE forwarding headers — they are
+  //     attacker-controlled in that scenario.
+  //   - 'unknown' is the last-resort key when nothing else is available.
   const ERROR_RATE_LIMIT = 60
   const ERROR_RATE_WINDOW_MS = 60_000
+  const ERROR_GLOBAL_RATE_LIMIT = 600
+  const ERROR_MAP_MAX = 10_000
   const errorRateBuckets = new Map<string, { count: number; resetAt: number }>()
+  let globalErrorCount = 0
+  let globalErrorResetAt = 0
 
   // Two ways to reach /admin/*:
   //   - X-Admin-Token header matches deps.adminToken (env-driven ops scripts)
@@ -231,20 +292,30 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
     return false
   }
 
-  function clientIp(req: Request): string {
-    // Cloudflare Tunnel preserves the real client IP in CF-Connecting-IP.
-    return (
-      req.headers.get('cf-connecting-ip') ||
-      req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-      'unknown'
-    )
-  }
+  function rateLimitErrorReport(rateKey: string, now: number): boolean {
+    // ---- global backstop ----
+    if (now >= globalErrorResetAt) {
+      globalErrorCount = 0
+      globalErrorResetAt = now + ERROR_RATE_WINDOW_MS
+    }
+    if (globalErrorCount >= ERROR_GLOBAL_RATE_LIMIT) return false
+    globalErrorCount += 1
 
-  function rateLimitErrorReport(ip: string): boolean {
-    const now = (deps.now ?? Date.now)()
-    const bucket = errorRateBuckets.get(ip)
+    // ---- per-key bucket ----
+    // Evict expired entries on every call to keep the map bounded.
+    // If the map is still above the hard cap after eviction, drop the
+    // oldest entry (first in insertion order).
+    const bucket = errorRateBuckets.get(rateKey)
     if (!bucket || bucket.resetAt < now) {
-      errorRateBuckets.set(ip, { count: 1, resetAt: now + ERROR_RATE_WINDOW_MS })
+      // Sweep expired entries before adding a new one.
+      for (const [k, v] of errorRateBuckets) {
+        if (v.resetAt < now) errorRateBuckets.delete(k)
+      }
+      if (errorRateBuckets.size >= ERROR_MAP_MAX) {
+        // Drop the oldest entry (Maps preserve insertion order).
+        errorRateBuckets.delete(errorRateBuckets.keys().next().value!)
+      }
+      errorRateBuckets.set(rateKey, { count: 1, resetAt: now + ERROR_RATE_WINDOW_MS })
       return true
     }
     if (bucket.count >= ERROR_RATE_LIMIT) return false
@@ -418,7 +489,7 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
           key: Bun.file(deps.keyPath ?? './certs/key.pem'),
         }
       : undefined,
-    fetch: async (req: Request): Promise<Response> => {
+    fetch: async (req: Request, bunServer: import('bun').Server<unknown>): Promise<Response> => {
       const url = new URL(req.url)
       const pathname = url.pathname
       const method = req.method
@@ -463,7 +534,7 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
 
       // Wrap the rest of the handler so we can stamp the Allow-Origin
       // header onto every response when the request came from Tauri.
-      const baseResponse = await handleRouted(req, url, pathname, method)
+      const baseResponse = await handleRouted(req, url, pathname, method, bunServer)
       if (isTauriOrigin) {
         baseResponse.headers.set('Access-Control-Allow-Origin', origin!)
         baseResponse.headers.set('Access-Control-Allow-Credentials', 'true')
@@ -478,6 +549,7 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
     url: URL,
     pathname: string,
     method: string,
+    bunServer?: import('bun').Server<unknown>,
   ): Promise<Response> {
       // ---- static / version ----
       if (method === 'GET' && pathname === '/version') {
@@ -533,7 +605,12 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
       // ---- /api/errors ---- (client error reporting, no auth)
       if (pathname === '/api/errors') {
         if (method !== 'POST') return new Response('Method Not Allowed', { status: 405 })
-        if (!rateLimitErrorReport(clientIp(req))) {
+        const socketAddr = bunServer?.requestIP(req) ?? null
+        const rateKey = deriveRateKey(
+          socketAddr ? socketAddr.address : null,
+          req.headers,
+        )
+        if (!rateLimitErrorReport(rateKey, (deps.now ?? Date.now)())) {
           return Response.json({ error: 'rate limited' }, { status: 429 })
         }
         let payload: Record<string, unknown>
