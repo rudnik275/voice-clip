@@ -22,6 +22,7 @@ export interface SessionsStore {
   create(userId: string): Session
   resolve(token: string): Session | null
   delete(token: string): void
+  deleteIdleSince(cutoffMs: number): number
 }
 
 interface SessionRow {
@@ -45,9 +46,22 @@ export function createSessionsStore(db: DB, now: () => number = Date.now): Sessi
     `UPDATE sessions SET last_accessed_at = ? WHERE token = ? RETURNING *`,
   )
   const removeStmt = db.prepare('DELETE FROM sessions WHERE token = ?')
+  const deleteIdleStmt = db.prepare('DELETE FROM sessions WHERE last_accessed_at < ?')
+
+  // Lazy daily sweep: at most once per 24 h, purge sessions idle beyond SESSION_TTL_MS.
+  const SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000
+  let lastSweepAt = 0
+
+  function maybeSweep(): void {
+    const ts = now()
+    if (ts - lastSweepAt < SWEEP_INTERVAL_MS) return
+    lastSweepAt = ts
+    deleteIdleStmt.run(ts - SESSION_TTL_MS)
+  }
 
   return {
     create(userId: string): Session {
+      maybeSweep()
       const ts = now()
       const row = insert.get(newToken(), userId, ts, ts)
       // RETURNING * always yields a row for INSERT — assert non-null.
@@ -68,6 +82,11 @@ export function createSessionsStore(db: DB, now: () => number = Date.now): Sessi
 
     delete(token: string): void {
       removeStmt.run(token)
+    },
+
+    deleteIdleSince(cutoffMs: number): number {
+      const result = deleteIdleStmt.run(cutoffMs)
+      return Number(result.changes)
     },
   }
 }

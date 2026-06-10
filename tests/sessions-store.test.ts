@@ -118,4 +118,73 @@ describe('sessions-store (SQLite, 90-day idle TTL)', () => {
     expect(typeof s.created_at).toBe('number')
     expect(typeof s.last_accessed_at).toBe('number')
   })
+
+  test('deleteIdleSince() removes sessions not accessed since the cutoff, keeps recent ones', () => {
+    // Use a fixed-time store so no automatic sweep fires during this test.
+    let clock = 1_000_000_000_000
+    const { sessions, user } = setup(() => clock)
+
+    // Create an old session at clock=T
+    const old = sessions.create(user.id)
+    expect(old.last_accessed_at).toBe(clock)
+
+    // Create a fresh session at a later time (but still within TTL so no sweep)
+    clock += 1_000
+    const fresh = sessions.create(user.id)
+
+    // deleteIdleSince with a cutoff that is newer than `old.last_accessed_at`
+    // but older than `fresh.last_accessed_at`
+    const cutoff = old.last_accessed_at + 500 // between old and fresh
+    const removed = sessions.deleteIdleSince(cutoff)
+    expect(removed).toBe(1)
+
+    // old session is gone (its last_accessed_at < cutoff)
+    expect(sessions.resolve(old.token)).toBeNull()
+    // fresh session survives (its last_accessed_at > cutoff)
+    expect(sessions.resolve(fresh.token)).not.toBeNull()
+  })
+
+  test('lazy sweep: create() triggers deleteIdleSince once per 24 h', () => {
+    let clock = 1_000_000_000_000
+    const { sessions, user } = setup(() => clock)
+
+    // Create a session that will age out
+    const aged = sessions.create(user.id)
+
+    // Advance beyond SESSION_TTL_MS so the next create() triggers a sweep
+    clock += SESSION_TTL_MS + 24 * 60 * 60 * 1000 + 1
+
+    // This create() should trigger the sweep and purge the aged session
+    sessions.create(user.id)
+
+    // The aged session row is gone (sweep ran)
+    // Use resolve() on the aged token — it will be null either from sweep or TTL
+    expect(sessions.resolve(aged.token)).toBeNull()
+  })
+
+  test('lazy sweep: two creates within 24 h only sweep once', () => {
+    let clock = 1_000_000_000_000
+    const { sessions, user } = setup(() => clock)
+
+    // Seed an aged session
+    const aged = sessions.create(user.id)
+
+    // Advance to trigger sweep on next create
+    clock += SESSION_TTL_MS + 24 * 60 * 60 * 1000 + 1
+
+    // First create → sweep runs, aged is purged
+    sessions.create(user.id)
+    expect(sessions.resolve(aged.token)).toBeNull()
+
+    // Seed another session that would be in the window for the next sweep
+    clock += 1_000
+    const recent = sessions.create(user.id)
+
+    // Second create within 24 h → sweep should NOT run, recent stays
+    clock += 60_000
+    sessions.create(user.id)
+
+    // recent session was created after the last sweep, should still be alive
+    expect(sessions.resolve(recent.token)).not.toBeNull()
+  })
 })

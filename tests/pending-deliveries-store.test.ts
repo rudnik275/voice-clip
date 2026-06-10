@@ -2,7 +2,10 @@ import { describe, expect, test } from 'bun:test'
 import { openDb } from '../src/db'
 import { createUsersStore } from '../src/users-store'
 import { createDevicesStore } from '../src/devices-store'
-import { createPendingDeliveriesStore } from '../src/pending-deliveries-store'
+import {
+  createPendingDeliveriesStore,
+  PENDING_DELIVERIES_RETENTION_MS,
+} from '../src/pending-deliveries-store'
 
 function setup(now: () => number = Date.now) {
   const db = openDb(':memory:')
@@ -110,5 +113,75 @@ describe('pending-deliveries-store (SQLite)', () => {
     expect(pending.listByDevice(device.id)).toHaveLength(1)
     db.run('DELETE FROM users WHERE id = ?', [user.id])
     expect(pending.listByDevice(device.id)).toEqual([])
+  })
+
+  test('deleteOlderThan() removes rows created before the cutoff, keeps newer ones', () => {
+    let t = 1000
+    const { pending, devices, user } = setup(() => t)
+    const d = devices.create(user.id)
+
+    // Enqueue an old row
+    pending.enqueue(d.id, 1)
+
+    // Advance past the cutoff
+    t = 5000
+    // Enqueue a fresh row
+    pending.enqueue(d.id, 2)
+
+    const removed = pending.deleteOlderThan(3000) // row at t=1000 is older
+    expect(removed).toBe(1)
+    expect(pending.listByDevice(d.id)).toEqual([{ seq: 2, source: 'online' }])
+  })
+
+  test('deleteByUser() removes pending rows for all devices belonging to the user, leaves other users untouched', () => {
+    const db = openDb(':memory:')
+    const users = createUsersStore(db)
+    const devices = createDevicesStore(db)
+    const pending = createPendingDeliveriesStore(db)
+
+    const alice = users.upsertByGoogleSub({ sub: 'a1', email: 'alice@test.com', name: 'Alice' })
+    const bob = users.upsertByGoogleSub({ sub: 'b1', email: 'bob@test.com', name: 'Bob' })
+
+    const aliceMac1 = devices.create(alice.id, 'Alice Mac 1')
+    const aliceMac2 = devices.create(alice.id, 'Alice Mac 2')
+    const bobMac = devices.create(bob.id, 'Bob Mac')
+
+    pending.enqueue(aliceMac1.id, 10)
+    pending.enqueue(aliceMac2.id, 11)
+    pending.enqueue(bobMac.id, 20)
+
+    pending.deleteByUser(alice.id)
+
+    // Both of Alice's devices are cleared
+    expect(pending.listByDevice(aliceMac1.id)).toEqual([])
+    expect(pending.listByDevice(aliceMac2.id)).toEqual([])
+    // Bob's rows are untouched
+    expect(pending.listByDevice(bobMac.id)).toEqual([{ seq: 20, source: 'online' }])
+  })
+
+  test('lazy sweep: enqueue() triggers age-purge at most once per 24 h', () => {
+    let t = 0
+    const db = openDb(':memory:')
+    const users = createUsersStore(db, () => t)
+    const devices = createDevicesStore(db, () => t)
+    const pending = createPendingDeliveriesStore(db, () => t)
+    const user = users.upsertByGoogleSub({ sub: 'g1', email: 'a@example.com', name: 'A' })
+    const d = devices.create(user.id)
+
+    // Enqueue an old row
+    t = 1000
+    pending.enqueue(d.id, 1)
+
+    // Advance past retention window to trigger sweep on next enqueue
+    t = 1000 + PENDING_DELIVERIES_RETENTION_MS + 24 * 60 * 60 * 1000 + 1
+    pending.enqueue(d.id, 2)
+
+    // Row 1 should be gone (created at t=1000, cutoff = t - 7d)
+    expect(pending.listByDevice(d.id)).toEqual([{ seq: 2, source: 'online' }])
+
+    // Second enqueue within 24 h: row 2 should survive
+    t += 60_000
+    pending.enqueue(d.id, 3)
+    expect(pending.listByDevice(d.id)).toContainEqual({ seq: 2, source: 'online' })
   })
 })

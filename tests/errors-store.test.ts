@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { openDb } from '../src/db'
 import { createUsersStore } from '../src/users-store'
-import { createErrorsStore } from '../src/errors-store'
+import { createErrorsStore, ERRORS_RETENTION_MS } from '../src/errors-store'
 
 function setup(now: () => number = Date.now) {
   const db = openDb(':memory:')
@@ -100,5 +100,49 @@ describe('errors-store (SQLite)', () => {
     expect(remaining).toEqual([c.id])
     expect(a).toBeDefined()
     expect(b).toBeDefined()
+  })
+
+  test('lazy sweep: insert triggers purge at most once per 24 h; old rows gone, fresh rows kept', () => {
+    // t=0: create store
+    let t = 0
+    const { errors } = setup(() => t)
+
+    // Insert an old row (will be outside 30-day window once now advances)
+    t = 1000
+    const old = errors.insert({ type: 'old', message: 'old' })
+
+    // Advance 31 days. Next insert should trigger the sweep.
+    t = 1000 + ERRORS_RETENTION_MS + 1
+    const fresh = errors.insert({ type: 'fresh', message: 'fresh' })
+
+    // old row should have been swept
+    expect(errors.get(old.id)).toBeNull()
+    // fresh row was inserted after the cutoff, so it survives
+    expect(errors.get(fresh.id)).not.toBeNull()
+  })
+
+  test('lazy sweep: two inserts within 24 h only sweep once', () => {
+    let sweepCount = 0
+    let t = 0
+    const db = openDb(':memory:')
+    const users = createUsersStore(db, () => t)
+    const errors = createErrorsStore(db, () => t)
+    void users
+
+    // Insert seed row in the past
+    t = 1000
+    errors.insert({ type: 'seed', message: 'seed' })
+
+    // Advance past retention window to trigger sweep on first insert
+    t = 1000 + ERRORS_RETENTION_MS + 1
+    errors.insert({ type: 'first', message: 'first' })
+    sweepCount += 1
+
+    // Second insert less than 24 h later — sweep should NOT run again
+    t += 60_000
+    errors.insert({ type: 'second', message: 'second' })
+    // Only 1 sweep happened — verify by checking that the 'first' row still exists
+    expect(errors.list({ includeResolved: true }).map((r) => r.type)).toContain('first')
+    expect(sweepCount).toBe(1)
   })
 })

@@ -929,6 +929,9 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
         }
         if (method === 'DELETE') {
           history.clear(authed.user.id)
+          // Clear any pending-delivery rows for this user's devices so they
+          // don't replay clips that no longer exist in history.
+          pendingDeliveries.deleteByUser(authed.user.id)
           return Response.json({ ok: true })
         }
         return new Response('Method Not Allowed', { status: 405 })

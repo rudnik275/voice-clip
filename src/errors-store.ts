@@ -43,6 +43,8 @@ export interface ListErrorsFilter {
   includeResolved?: boolean
 }
 
+export const ERRORS_RETENTION_MS = 30 * 24 * 60 * 60 * 1000 // 30 days
+
 export interface ErrorsStore {
   insert(input: InsertErrorInput): ErrorRecord
   list(filter?: ListErrorsFilter): ErrorRecord[]
@@ -70,8 +72,20 @@ export function createErrorsStore(db: DB, now: () => number = Date.now): ErrorsS
   const markResolvedStmt = db.prepare('UPDATE errors SET resolved = 1 WHERE id = ?')
   const deleteOlder = db.prepare('DELETE FROM errors WHERE ts < ?')
 
+  // Lazy daily sweep: at most once per 24 h, purge rows older than ERRORS_RETENTION_MS.
+  const SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000
+  let lastSweepAt = 0
+
+  function maybeSweep(): void {
+    const ts = now()
+    if (ts - lastSweepAt < SWEEP_INTERVAL_MS) return
+    lastSweepAt = ts
+    deleteOlder.run(ts - ERRORS_RETENTION_MS)
+  }
+
   return {
     insert(input: InsertErrorInput): ErrorRecord {
+      maybeSweep()
       const ts = input.ts ?? now()
       const row = insertStmt.get(
         newErrorId(),
