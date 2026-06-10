@@ -868,16 +868,30 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
         // row is deleted only when the Mac acks via /events/ack after
         // pbcopy; unacked clips replay on the next /events connect. The
         // live push is just a best-effort latency optimization on top.
-        const clipPayload = {
-          seq: clip.seq,
-          text: clip.text,
-          recordedAt: clip.recordedAt,
-          source: clip.source,
-          costUsd,
-        }
-        for (const d of devices.list(authed.user.id)) {
-          pendingDeliveries.enqueue(d.id, clip.seq)
-          liveBus.publish(d.id, clipPayload)
+        //
+        // SSE payload `source` contract (what it means to the Mac client):
+        //   'online'  → copy unconditionally (pbcopy) — fresh capture or an
+        //               explicit /clip/copy.
+        //   'offline' → history-only; do NOT touch the clipboard (a stale clip
+        //               drained from the phone's offline queue must never
+        //               clobber the user's current Mac clipboard).
+        //
+        // We enforce the contract at the source: a `source=offline` upload is
+        // history-only — no live publish, no pending rows, no clipboard
+        // delivery — so an offline-sourced clip can never reach the clipboard
+        // path at all.
+        if (source === 'online') {
+          const clipPayload = {
+            seq: clip.seq,
+            text: clip.text,
+            recordedAt: clip.recordedAt,
+            source: clip.source,
+            costUsd,
+          }
+          for (const d of devices.list(authed.user.id)) {
+            pendingDeliveries.enqueue(d.id, clip.seq, clip.source)
+            liveBus.publish(d.id, clipPayload)
+          }
         }
 
         // Success — the reservation is kept (don't refund in finally).
@@ -1032,7 +1046,11 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
         // per device + best-effort live push; ack deletes the row, replay on
         // reconnect covers lost live frames). `source: 'online'` because
         // this is an explicit user action — the Mac should pbcopy it
-        // unconditionally, never treat it like a stale offline replay.
+        // unconditionally, never treat it like a stale offline replay. We
+        // persist that intent on the pending row (enqueue source 'online')
+        // so the copy-on-replay semantics survive even when the underlying
+        // history clip was offline-sourced — replay reads the row's intent,
+        // not history.source.
         const clipPayload = {
           seq: clip.seq,
           text: clip.text,
@@ -1042,7 +1060,7 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
         }
         const macs = devices.list(authed.user.id)
         for (const d of macs) {
-          pendingDeliveries.enqueue(d.id, clip.seq)
+          pendingDeliveries.enqueue(d.id, clip.seq, 'online')
           liveBus.publish(d.id, clipPayload)
         }
         return Response.json({ ok: true, devices: macs.length })
@@ -1464,17 +1482,24 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
             // phone uploads mid-flush can never interleave ahead of the
             // backlog. Each replayed frame uses the SAME payload shape as the
             // /upload fan-out so the Mac handles them identically.
+            // text/recordedAt/costUsd come from history, but `source` is the
+            // pending row's stored delivery intent — NOT history.source — so
+            // a queued /clip/copy (intent 'online') still forces a pbcopy on
+            // replay even if the underlying history clip was offline-sourced.
+            // See the SSE payload `source` contract documented at the /upload
+            // fan-out.
             const queued = pendingDeliveries.listByDevice(device.id)
             if (queued.length > 0) {
-              const seqs = new Set(queued.map((q) => q.seq))
+              const intentBySeq = new Map(queued.map((q) => [q.seq, q.source]))
               const minSeq = queued[0]!.seq
               for (const clip of history.listSince(device.user_id, minSeq - 1)) {
-                if (!seqs.has(clip.seq)) continue
+                const intent = intentBySeq.get(clip.seq)
+                if (intent === undefined) continue
                 const payload = {
                   seq: clip.seq,
                   text: clip.text,
                   recordedAt: clip.recordedAt,
-                  source: clip.source,
+                  source: intent,
                   costUsd: clip.costUsd,
                 }
                 controller.enqueue(enc.encode(`data: ${JSON.stringify(payload)}\n\n`))
