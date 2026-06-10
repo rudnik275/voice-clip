@@ -29,7 +29,7 @@ import { createDevicesStore, type DevicesStore } from './devices-store'
 import { createErrorsStore, type ErrorsStore } from './errors-store'
 import { createFailedAudioStore } from './failed-audio-store'
 import { createAllowedEmailsStore, type AllowedEmailsStore } from './allowed-emails-store'
-import { createInvitesStore, type InvitesStore } from './invites-store'
+import { createInvitesStore, type InvitesStore, type InviteRow } from './invites-store'
 import { createPlansStore, monthKeyOf, type PlansStore } from './plans-store'
 import {
   createPendingDeliveriesStore,
@@ -1203,25 +1203,21 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
           })
         }
 
-        // Invite-consume runs BEFORE the allowlist check so a fresh email
-        // gets added to allowed_emails first, then trivially passes the
-        // existing isAllowed() gate. Invite cookie was set by /invite/:token.
+        // Validate-before-create: NO user row is created until we know the
+        // sign-in is authorised. The invite is consumed AND the email added
+        // to allowed_emails in one db.transaction (consumeAndAllow) so a fresh
+        // invitee passes the isAllowed() gate below, and a crash can never burn
+        // the single-use token without granting access. The user upsert and the
+        // used_by_user_id backfill happen only on the success path. A bogus or
+        // already-used invite cookie consumes nothing and just falls through to
+        // the isAllowed() gate (→ 403 for a non-allowlisted email, leaving the
+        // users table unchanged). Invite cookie was set by /invite/:token.
         const inviteToken = parseInviteCookie(req.headers.get('cookie'))
-        let consumedInviteEmail: string | null = null
+        let consumedInvite: InviteRow | null = null
         if (inviteToken) {
-          const u = users.upsertByGoogleSub({
-            sub: profile.sub,
-            email: profile.email,
-            name: profile.name,
-            picture_url: profile.picture_url,
-          })
-          // Atomic UPDATE … WHERE used_at IS NULL — a second tap on the
-          // same link returns null and falls through to the normal flow.
-          const consumed = invites.consume(inviteToken, u.id, profile.email)
-          if (consumed) {
+          consumedInvite = invites.consumeAndAllow(inviteToken, profile.email, (consumed) => {
             allowedEmails.add(profile.email, 'invite', consumed.created_by_user_id)
-            consumedInviteEmail = profile.email
-          }
+          })
         }
 
         if (!allowedEmails.isAllowed(profile.email)) {
@@ -1236,14 +1232,22 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
           })
         }
 
-        // upsert again (or first time, if no invite token path ran above)
-        // so picture/name refresh on every sign-in.
+        // Access is granted — now (and only now) create/refresh the user row.
+        // This is the first users.upsertByGoogleSub in the callback: a denied
+        // sign-in above returns 403 before reaching here, so the users table
+        // stays unchanged for unauthorised attempts. picture/name refresh on
+        // every sign-in.
         const user = users.upsertByGoogleSub({
           sub: profile.sub,
           email: profile.email,
           name: profile.name,
           picture_url: profile.picture_url,
         })
+
+        // Link the just-consumed invite to the now-created user row.
+        if (consumedInvite && inviteToken) {
+          invites.setUsedBy(inviteToken, user.id)
+        }
 
         // Apply any plan stored on the allowed_emails row. This fires on every
         // login so a plan bump via /admin/users takes effect at next sign-in
@@ -1266,7 +1270,7 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
           h.append('set-cookie', buildClearInviteCookie({ secure: cookieSecure }))
         }
         h.append('set-cookie', buildSessionCookie(session.token, { secure: cookieSecure }))
-        if (consumedInviteEmail) {
+        if (consumedInvite) {
           // Quiet success signal in headers, mostly to make tests legible.
           h.set('x-voice-clip-signup', 'invite')
         }
