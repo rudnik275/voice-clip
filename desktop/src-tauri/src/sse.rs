@@ -62,6 +62,8 @@ pub enum ConnStatus {
     Reconnecting,
     #[default]
     Offline,
+    /// The device_token was rejected (401/403) — terminal, the loop stops.
+    Unauthorized,
 }
 
 /// Full-jitter backoff: random in `[0, min(cap, base * 2^attempt))`.
@@ -91,16 +93,22 @@ impl Drop for SseClient {
 }
 
 /// Spawn the reconnect loop. `on_status` is invoked on every state change;
-/// `on_clip` after each successful pbcopy. Both run on the worker thread.
-pub fn spawn<S, C>(
+/// `on_clip` after each successful pbcopy. `on_auth_failure` fires once if the
+/// server rejects the device_token (401/403) — the token is dead server-side
+/// (the device was revoked), so retrying is pointless: the loop surfaces it and
+/// exits instead of polling a revoked token forever. All three run on the
+/// worker thread.
+pub fn spawn<S, C, A>(
     base_url: String,
     device_token: String,
     on_status: S,
     on_clip: C,
+    on_auth_failure: A,
 ) -> SseClient
 where
     S: Fn(ConnStatus) + Send + 'static,
     C: Fn(&Clip) + Send + 'static,
+    A: Fn() + Send + 'static,
 {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_thread = stop.clone();
@@ -170,6 +178,17 @@ where
                         }
                     }
                     // Stream ended (server closed / network blip) → reconnect.
+                }
+                Ok(resp) if resp.status() == 401 || resp.status() == 403 => {
+                    // The device_token was rejected — almost always because the
+                    // device was revoked server-side. Device tokens never
+                    // expire, so this is terminal: do NOT retry (that would
+                    // poll a dead token forever and keep the tray "Offline").
+                    // Surface it so the app drops to the signed-out state.
+                    eprintln!("sse: auth rejected ({}) — stopping", resp.status());
+                    on_status(ConnStatus::Unauthorized);
+                    on_auth_failure();
+                    return;
                 }
                 Ok(resp) => {
                     eprintln!("sse: server returned {}", resp.status());

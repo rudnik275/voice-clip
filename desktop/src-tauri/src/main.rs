@@ -79,6 +79,7 @@ fn status_str(s: ConnStatus) -> &'static str {
         ConnStatus::Connected => "connected",
         ConnStatus::Reconnecting => "reconnecting",
         ConnStatus::Offline => "offline",
+        ConnStatus::Unauthorized => "unauthorized",
     }
 }
 
@@ -91,9 +92,50 @@ fn update_tray(app: &tauri::AppHandle, status: ConnStatus) {
             ConnStatus::Connecting => "Voice Clip — Connecting…",
             ConnStatus::Reconnecting => "Voice Clip — Reconnecting…",
             ConnStatus::Offline => "Voice Clip — Offline",
+            ConnStatus::Unauthorized => "Voice Clip — Signed out",
         };
         let _ = tray.set_tooltip(Some(tooltip));
     }
+}
+
+/// Sign out the desktop app: tear down the SSE worker, optionally revoke the
+/// device server-side, wipe the Keychain, reset the tray, and notify the
+/// webview (`signed_out`) so it flips to the pairing splash. Both the webview
+/// `sign_out` command and the tray "Logout" item funnel through here so the two
+/// paths can never drift. `revoke_server_side=false` is used when the token is
+/// already dead (e.g. an SSE 401) — there's nothing to revoke, just clean up.
+fn perform_sign_out(app: &tauri::AppHandle, revoke_server_side: bool) {
+    let state = app.state::<AppState>();
+
+    // 1. Stop the SSE stream first so the token can't race a reconnect.
+    if let Some(client) = state.sse.lock().unwrap().take() {
+        client.stop();
+    }
+
+    // 2. Best-effort server-side revocation of the CALLING device.
+    if revoke_server_side {
+        if let Some(token) = keychain::load_token() {
+            let url = format!("{}/devices/me", public_url());
+            std::thread::spawn(move || {
+                let client = reqwest::blocking::Client::new();
+                let _ = client.delete(&url).header("X-Device-Token", &token).send();
+            });
+        }
+    }
+
+    // 3. Wipe the Keychain token.
+    let _ = keychain::clear_token();
+
+    // 4. Reset tray state.
+    *state.last_clip.lock().unwrap() = None;
+    *state.conn_status.lock().unwrap() = ConnStatus::Offline;
+    update_tray(app, ConnStatus::Offline);
+    if let Some(item) = state.clip_item.lock().unwrap().as_ref() {
+        let _ = item.set_text("— no clips yet —");
+    }
+
+    // 5. Notify the webview so it flips to the signed-out / pairing view.
+    let _ = app.emit("signed_out", ());
 }
 
 /// Update the "last clip" item in the tray menu.
@@ -190,38 +232,14 @@ fn begin_pairing(app: tauri::AppHandle, state: State<AppState>) -> Result<String
     Ok(url)
 }
 
-/// Sign out: tear down the SSE worker, forget the Keychain token, and best-
-/// effort notify the server to revoke the device registration.
+/// Sign out (invoked from the webview profile modal): tear down the SSE worker,
+/// revoke the device server-side (DELETE /devices/me), forget the Keychain
+/// token, reset the tray, and emit `signed_out` so the webview flips to the
+/// pairing splash. Shares all logic with the tray "Logout" item via
+/// `perform_sign_out`.
 #[tauri::command]
-fn sign_out(app: tauri::AppHandle, state: State<AppState>) -> Result<(), String> {
-    // Stop the SSE stream first so the token can't race.
-    if let Some(client) = state.sse.lock().unwrap().take() {
-        client.stop();
-    }
-
-    // Best-effort server-side revocation. The route (DELETE /devices/:id) may
-    // not exist yet (#9 slice) — ignore 404 and any network errors.
-    if let Some(token) = keychain::load_token() {
-        let url = format!("{}/devices/me", public_url());
-        let _ = std::thread::spawn(move || {
-            let client = reqwest::blocking::Client::new();
-            let _ = client
-                .delete(&url)
-                .header("X-Device-Token", &token)
-                .send();
-        });
-    }
-
-    keychain::clear_token()?;
-
-    // Reset tray state.
-    *state.last_clip.lock().unwrap() = None;
-    *state.conn_status.lock().unwrap() = ConnStatus::Offline;
-    update_tray(&app, ConnStatus::Offline);
-    if let Some(item) = app.state::<AppState>().clip_item.lock().unwrap().as_ref() {
-        let _ = item.set_text("— no clips yet —");
-    }
-
+fn sign_out(app: tauri::AppHandle, _state: State<AppState>) -> Result<(), String> {
+    perform_sign_out(&app, true);
     Ok(())
 }
 
@@ -350,6 +368,7 @@ fn start_sse(app: &tauri::AppHandle) {
     };
     let app_status = app.clone();
     let app_clip = app.clone();
+    let app_auth = app.clone();
     let client = sse::spawn(
         public_url(),
         token,
@@ -379,6 +398,19 @@ fn start_sse(app: &tauri::AppHandle) {
                     text: preview,
                 },
             );
+        },
+        move || {
+            // SSE got a 401/403 → the device_token was revoked server-side.
+            // The token is already dead, so skip the revocation HTTP call;
+            // just clear the Keychain + tray and emit `signed_out` so the
+            // webview drops to the pairing splash (one reconnect cycle, no
+            // infinite 401 retry). run_on_main_thread keeps the tray/emit
+            // work off the SSE worker thread.
+            let app_main = app_auth.clone();
+            let _ = app_auth.run_on_main_thread(move || {
+                perform_sign_out(&app_main, false);
+                focus_window(&app_main);
+            });
         },
     );
     *app.state::<AppState>().sse.lock().unwrap() = Some(client);
@@ -525,31 +557,11 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                     });
                 }
                 "logout" => {
-                    let state = app.state::<AppState>();
-                    if let Some(client) = state.sse.lock().unwrap().take() {
-                        client.stop();
-                    }
-                    if let Some(token) = keychain::load_token() {
-                        let url = format!("{}/devices/me", public_url());
-                        std::thread::spawn(move || {
-                            let client = reqwest::blocking::Client::new();
-                            let _ = client
-                                .delete(&url)
-                                .header("X-Device-Token", &token)
-                                .send();
-                        });
-                    }
-                    let _ = keychain::clear_token();
-                    *state.last_clip.lock().unwrap() = None;
-                    *state.conn_status.lock().unwrap() = ConnStatus::Offline;
-                    update_tray(app, ConnStatus::Offline);
-                    if let Some(item) =
-                        app.state::<AppState>().clip_item.lock().unwrap().as_ref()
-                    {
-                        let _ = item.set_text("— no clips yet —");
-                    }
-                    // Notify the webview so it flips to signed-out view.
-                    let _ = app.emit("signed_out", ());
+                    // Same path as the webview `sign_out` command — revoke the
+                    // device, wipe the Keychain, reset the tray, emit
+                    // `signed_out`. Then bring the window forward so the user
+                    // lands on the pairing splash.
+                    perform_sign_out(app, true);
                     focus_window(app);
                 }
                 "quit" => {
