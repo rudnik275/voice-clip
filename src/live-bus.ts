@@ -6,13 +6,17 @@
 // and calls publish(device.id, clip) — every currently-connected Mac for
 // that user gets the frame instantly.
 //
-// This is intentionally process-local and ephemeral: a Mac that is offline
-// when the clip is dictated simply does not receive it (pending-clip replay
-// for offline Macs is the NEXT slice — out of scope here).
+// This is intentionally process-local and ephemeral: live push is a
+// best-effort latency optimization on top of the durable pending_deliveries
+// queue. The fan-out ALWAYS writes a pending row per device; publish()
+// returning true only means the frame was buffered into the stream — not
+// that the client received it. Durable delivery is: pending row → replay on
+// reconnect → /events/ack deletes the row (at-least-once).
 //
 // A device id maps to at most one controller — re-subscribing (e.g. the app
-// reconnected) replaces the previous stream. publish() returns whether the
-// frame was actually handed to a live subscriber.
+// reconnected) replaces the previous stream. unsubscribe() is guarded by
+// controller identity so a late cancel() of an already-replaced (dead)
+// stream cannot detach the replacement subscriber.
 //
 // disconnect() is server-initiated teardown: when a device is revoked
 // (DELETE /devices/:id) its live SSE stream must be aborted so the Tauri
@@ -34,7 +38,7 @@ type BusController = SseController & {
 
 export interface LiveBus {
   subscribe(deviceId: string, controller: BusController): void
-  unsubscribe(deviceId: string): void
+  unsubscribe(deviceId: string, controller: BusController): void
   publish(deviceId: string, payload: unknown): boolean
   disconnect(deviceId: string): void
 }
@@ -48,8 +52,14 @@ export function createLiveBus(): LiveBus {
       subscribers.set(deviceId, controller)
     },
 
-    unsubscribe(deviceId: string): void {
-      subscribers.delete(deviceId)
+    unsubscribe(deviceId: string, controller: BusController): void {
+      // Identity-guarded: only the stream that is still the registered
+      // subscriber may remove itself. Without this, the runtime firing a
+      // dead old stream's cancel() AFTER the client already reconnected
+      // (and re-subscribed) would detach the NEW stream's controller.
+      if (subscribers.get(deviceId) === controller) {
+        subscribers.delete(deviceId)
+      }
     },
 
     disconnect(deviceId: string): void {

@@ -845,11 +845,13 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
         // shouldn't count toward the limit.
         plans.incrementUsage(authed.user.id, month)
 
-        // Fan-out: push the clip to every paired Mac for this user. A Mac
-        // with a live SSE stream gets it instantly; one that is offline gets
-        // a pending_deliveries row so it replays the clip on its next
-        // /events connect (publish() returns false when there is no live
-        // subscriber).
+        // Fan-out (at-least-once): EVERY paired Mac gets a durable
+        // pending_deliveries row, regardless of whether the live SSE push
+        // lands. publish() returning true only means the frame was buffered
+        // into the stream — a half-dead connection can still drop it. The
+        // row is deleted only when the Mac acks via /events/ack after
+        // pbcopy; unacked clips replay on the next /events connect. The
+        // live push is just a best-effort latency optimization on top.
         const clipPayload = {
           seq: clip.seq,
           text: clip.text,
@@ -858,8 +860,8 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
           costUsd,
         }
         for (const d of devices.list(authed.user.id)) {
-          const live = liveBus.publish(d.id, clipPayload)
-          if (!live) pendingDeliveries.enqueue(d.id, clip.seq)
+          pendingDeliveries.enqueue(d.id, clip.seq)
+          liveBus.publish(d.id, clipPayload)
         }
 
         return Response.json({
@@ -1002,9 +1004,11 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
           return Response.json({ error: 'not found' }, { status: 404 })
         }
 
-        // Same fan-out shape as /upload. `source: 'online'` because this is
-        // an explicit user action — the Mac should pbcopy it unconditionally,
-        // never treat it like a stale offline replay.
+        // Same fan-out shape as /upload (at-least-once: durable pending row
+        // per device + best-effort live push; ack deletes the row, replay on
+        // reconnect covers lost live frames). `source: 'online'` because
+        // this is an explicit user action — the Mac should pbcopy it
+        // unconditionally, never treat it like a stale offline replay.
         const clipPayload = {
           seq: clip.seq,
           text: clip.text,
@@ -1014,8 +1018,8 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
         }
         const macs = devices.list(authed.user.id)
         for (const d of macs) {
-          const live = liveBus.publish(d.id, clipPayload)
-          if (!live) pendingDeliveries.enqueue(d.id, clip.seq)
+          pendingDeliveries.enqueue(d.id, clip.seq)
+          liveBus.publish(d.id, clipPayload)
         }
         return Response.json({ ok: true, devices: macs.length })
       }
@@ -1414,8 +1418,15 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
         // reaps it. Cleared in cancel(), and on the first failed enqueue
         // (which means the controller was already closed/errored).
         let heartbeat: ReturnType<typeof setInterval> | null = null
+        // Captured in start() so cancel() can unsubscribe with THIS stream's
+        // controller identity. A reconnect re-subscribes the device with a
+        // NEW controller; when the runtime later fires the dead old stream's
+        // cancel(), the identity guard in the bus keeps the new subscriber
+        // attached instead of silently detaching it.
+        let busController: ReadableStreamDefaultController<Uint8Array> | null = null
         const stream = new ReadableStream<Uint8Array>({
           start(controller) {
+            busController = controller
             // Prelude comment so proxies flush headers and the client sees
             // the connection is live immediately.
             controller.enqueue(enc.encode(': connected\n\n'))
@@ -1459,7 +1470,7 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
           cancel() {
             if (heartbeat) clearInterval(heartbeat)
             heartbeat = null
-            liveBus.unsubscribe(device.id)
+            if (busController) liveBus.unsubscribe(device.id, busController)
           },
         })
         return new Response(stream, {

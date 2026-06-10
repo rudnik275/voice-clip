@@ -168,7 +168,20 @@ describe('offline-clip replay for disconnected Macs', () => {
 
     // Offline Mac has exactly one queued row (the same seq).
     expect(pendingDeliveries.listByDevice(macOffline.id)).toEqual([{ seq: body.seq }])
-    // Live Mac never got queued (it was delivered live).
+    // At-least-once: the live Mac ALSO gets a pending row — live push is
+    // best-effort, so the row stays until the Mac acks the pbcopy.
+    expect(pendingDeliveries.listByDevice(macLive.id)).toEqual([{ seq: body.seq }])
+
+    // Live Mac acks after pbcopy → its pending row is deleted.
+    const liveAck = await fetch(`${baseUrl}/events/ack`, {
+      method: 'POST',
+      headers: {
+        'x-device-token': macLive.device_token,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ seq: body.seq }),
+    })
+    expect(liveAck.status).toBe(200)
     expect(pendingDeliveries.listByDevice(macLive.id)).toEqual([])
 
     // Offline Mac reconnects — its queued clip is replayed into the stream.
@@ -195,6 +208,74 @@ describe('offline-clip replay for disconnected Macs', () => {
     })
     expect(ackR.status).toBe(200)
     expect(pendingDeliveries.listByDevice(macOffline.id)).toEqual([])
+  })
+
+  test('live-delivered but never-acked clip is replayed on the next /events connect (at-least-once)', async () => {
+    db = openDb(':memory:')
+    const liveBus = createLiveBus()
+    const pendingDeliveries = createPendingDeliveriesStore(db)
+    const deps: ServerDeps = {
+      dataDir: dir,
+      port: 0,
+      useTls: false,
+      allowlist: ['alice@example.com'],
+      googleClientId: CLIENT_ID,
+      googleClientSecret: CLIENT_SECRET,
+      googleFetcher: makeGoogleFetcher({ sub: 'g1', email: 'alice@example.com', name: 'Alice' }),
+      db,
+      liveBus,
+      pendingDeliveries,
+      transcribe: async (): Promise<TranscriptionResult> => ({
+        text: 'потерянный клип',
+        usage: { audioTokens: 1000, textTokens: 0, outputTokens: 0 },
+      }),
+    }
+    server = await startServer(deps)
+    baseUrl = `http://localhost:${server.port}`
+    server.stop()
+    server = await startServer({ ...deps, publicUrl: baseUrl })
+    baseUrl = `http://localhost:${server.port}`
+
+    const token = await signIn(baseUrl)
+    const users = createUsersStore(db)
+    const user = users.upsertByGoogleSub({ sub: 'g1', email: 'alice@example.com', name: 'Alice' })
+    const devices = createDevicesStore(db)
+    const mac = devices.create(user.id, 'Half-dead Mac')
+
+    // The Mac LOOKS live (subscribed controller, enqueue succeeds) — but the
+    // connection is half-dead and the client never receives the frame, so it
+    // never acks. The clip must NOT be lost.
+    const m = mockController()
+    liveBus.subscribe(mac.id, m.controller)
+
+    const up = await fetch(`${baseUrl}/upload`, {
+      method: 'POST',
+      headers: { cookie: `session=${token}` },
+      body: audioForm('2026-05-17T10:00:00.000Z'),
+    })
+    expect(up.status).toBe(200)
+    const body = (await up.json()) as { seq: number }
+
+    // The live push did go into the (doomed) stream buffer…
+    expect(m.frames.find((f) => f.startsWith('data: '))).toBeTruthy()
+    // …but the pending row survives because no ack arrived.
+    expect(pendingDeliveries.listByDevice(mac.id)).toEqual([{ seq: body.seq }])
+
+    // The Mac reconnects — the unacked clip is replayed.
+    const evRes = await fetch(`${baseUrl}/events?device_token=${mac.device_token}`)
+    expect(evRes.status).toBe(200)
+    const replayed = (await readDataFrames(evRes, 1)) as Array<{ seq: number; text: string }>
+    expect(replayed).toHaveLength(1)
+    expect(replayed[0]!.seq).toBe(body.seq)
+    expect(replayed[0]!.text).toBe('потерянный клип')
+
+    // Ack from the new connection finally deletes the row.
+    await fetch(`${baseUrl}/events/ack`, {
+      method: 'POST',
+      headers: { 'x-device-token': mac.device_token, 'content-type': 'application/json' },
+      body: JSON.stringify({ seq: body.seq }),
+    })
+    expect(pendingDeliveries.listByDevice(mac.id)).toEqual([])
   })
 
   test('multiple queued clips replay oldest-first in seq order', async () => {
