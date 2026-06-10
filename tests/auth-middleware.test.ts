@@ -143,11 +143,13 @@ describe('parseDeviceToken', () => {
     expect(parseDeviceToken(req)).toBe('hdr-token')
   })
 
-  test('query string wins over header when both are present', () => {
+  test('header wins over query string when both are present (header-first precedence)', () => {
     const req = new Request('http://localhost/events?device_token=q', {
       headers: { 'x-device-token': 'h' },
     })
-    expect(parseDeviceToken(req)).toBe('q')
+    // Header takes precedence: the bearer token should not appear in proxy
+    // access logs on every SSE reconnect.
+    expect(parseDeviceToken(req)).toBe('h')
   })
 
   test('returns null when neither is present or value is empty', () => {

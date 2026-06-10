@@ -160,18 +160,21 @@ export function unauthorized(): Response {
 // ----- device-token auth (Mac Tauri app) -----
 //
 // The Mac app authenticates with the opaque device_token issued at pairing,
-// stored in its macOS Keychain. It rides either as `?device_token=` (SSE
-// connections can't set custom headers from the Rust reqwest stream as
-// cleanly as a query param) OR as the `X-Device-Token` header (for /events/ack
-// POSTs). Query wins if both are present.
+// stored in its macOS Keychain. It presents the token as the `X-Device-Token`
+// header (preferred: keeps the bearer out of proxy/tunnel access logs) OR as
+// `?device_token=` query parameter (deprecated: still accepted for
+// back-compat with older Tauri clients that have not yet updated). Header
+// wins if both are present.
 
 const DEVICE_TOKEN_HEADER = 'x-device-token'
 
 export function parseDeviceToken(req: Request): string | null {
-  const fromQuery = new URL(req.url).searchParams.get('device_token')
-  if (fromQuery && fromQuery.length > 0) return fromQuery
   const fromHeader = req.headers.get(DEVICE_TOKEN_HEADER)
   if (fromHeader && fromHeader.length > 0) return fromHeader
+  // Deprecated: ?device_token= query form writes the bearer token into proxy
+  // and tunnel access logs on every reconnect. Kept for back-compat only.
+  const fromQuery = new URL(req.url).searchParams.get('device_token')
+  if (fromQuery && fromQuery.length > 0) return fromQuery
   return null
 }
 

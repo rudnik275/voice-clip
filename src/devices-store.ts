@@ -30,6 +30,16 @@ export interface DevicesStore {
   list(userId: string): Device[]
   revoke(id: string): void
   touch(id: string): void
+  /**
+   * Delete every device whose last_seen_at is strictly before cutoffMs.
+   * FK ON DELETE CASCADE on pending_deliveries cleans up orphaned rows
+   * automatically. Returns the number of rows pruned.
+   *
+   * A Mac offline longer than STALE_DEVICE_PRUNE_WINDOW_MS must re-pair.
+   * This is intentional — an unseen device's token may already be invalid
+   * or the user may have decommissioned the machine entirely.
+   */
+  deleteUnseenSince(cutoffMs: number): number
 }
 
 interface DeviceRow {
@@ -65,6 +75,7 @@ export function createDevicesStore(db: DB, now: () => number = Date.now): Device
   )
   const removeStmt = db.prepare('DELETE FROM devices WHERE id = ?')
   const touchStmt = db.prepare('UPDATE devices SET last_seen_at = ? WHERE id = ?')
+  const pruneStmt = db.prepare('DELETE FROM devices WHERE last_seen_at < ?')
 
   return {
     create(userId: string, deviceName: string | null = null): Device {
@@ -92,6 +103,11 @@ export function createDevicesStore(db: DB, now: () => number = Date.now): Device
 
     touch(id: string): void {
       touchStmt.run(now(), id)
+    },
+
+    deleteUnseenSince(cutoffMs: number): number {
+      const result = pruneStmt.run(cutoffMs)
+      return result.changes
     },
   }
 }

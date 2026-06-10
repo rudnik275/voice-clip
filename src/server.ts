@@ -259,6 +259,23 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
   }
   const liveBus = deps.liveBus ?? createLiveBus()
 
+  // ---- stale-device prune ----
+  // Devices not seen for longer than this window are removed on the next
+  // pairing. A Mac offline >60 days must re-pair — acceptable trade-off
+  // against unbounded row + pending_deliveries growth from repeated re-pairs
+  // or decommissioned machines.
+  const STALE_DEVICE_PRUNE_WINDOW_MS = 60 * 24 * 60 * 60 * 1000 // 60 days
+  const STALE_DEVICE_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000 // once per 24h max
+  let lastDevicePruneAt = 0 // epoch-ms; 0 = never run this session
+
+  function pruneStaleDevicesLazy(): void {
+    const now = (deps.now ?? Date.now)()
+    if (now - lastDevicePruneAt < STALE_DEVICE_PRUNE_INTERVAL_MS) return
+    lastDevicePruneAt = now
+    const cutoff = now - STALE_DEVICE_PRUNE_WINDOW_MS
+    devices.deleteUnseenSince(cutoff)
+  }
+
   // Per-IP rate limit for /api/errors. The endpoint is intentionally unauthed
   // so the login page can report crashes; in exchange we cap at 60 req/min per
   // derived key plus a global backstop of 600 req/min across all keys.
@@ -1536,6 +1553,10 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
         }
 
         const device = devices.create(user.id)
+
+        // Lazily prune devices not seen for >60 days (at most once per 24h).
+        // FK ON DELETE CASCADE cleans up their pending_deliveries rows.
+        pruneStaleDevicesLazy()
 
         const deepLink =
           `voiceclip://callback?token=${encodeURIComponent(device.device_token)}` +

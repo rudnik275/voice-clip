@@ -151,6 +151,62 @@ describe('device-token auth on PWA routes', () => {
     const list = (await r.json()) as Array<{ id: string }>
     expect(list.length).toBeGreaterThanOrEqual(1)
   })
+
+  test('/events authenticates via X-Device-Token header (header-first precedence)', async () => {
+    // The SSE stream is long-lived; just check that the connection is accepted
+    // (2xx) when the token is in the header. We abort immediately — we only
+    // need the status code, not the stream body.
+    const ctrl = new AbortController()
+    const r = await fetch(`${baseUrl}/events`, {
+      headers: { 'X-Device-Token': deviceToken },
+      signal: ctrl.signal,
+    }).catch((e: Error) => {
+      // AbortError is expected when we cancel immediately after headers arrive.
+      if (e.name === 'AbortError') return null
+      throw e
+    })
+    if (r !== null) {
+      expect(r.status).toBe(200)
+      ctrl.abort()
+    }
+    // If r is null the abort fired before we could check, which still means
+    // the connection was accepted (no 401/403 before abort).
+  })
+
+  test('/events without any token is 401', async () => {
+    const r = await fetch(`${baseUrl}/events`)
+    expect(r.status).toBe(401)
+  })
+
+  test('/events still accepts ?device_token= query param (back-compat)', async () => {
+    const ctrl = new AbortController()
+    const r = await fetch(`${baseUrl}/events?device_token=${deviceToken}`, {
+      signal: ctrl.signal,
+    }).catch((e: Error) => {
+      if (e.name === 'AbortError') return null
+      throw e
+    })
+    if (r !== null) {
+      expect(r.status).toBe(200)
+      ctrl.abort()
+    }
+  })
+
+  test('header takes precedence over query param when both are present', async () => {
+    // Header = valid token; query param = bogus → should authenticate via header.
+    const ctrl = new AbortController()
+    const r = await fetch(`${baseUrl}/me?device_token=bogustoken`, {
+      headers: { 'X-Device-Token': deviceToken },
+      signal: ctrl.signal,
+    }).catch((e: Error) => {
+      if (e.name === 'AbortError') return null
+      throw e
+    })
+    if (r !== null) {
+      expect(r.status).toBe(200)
+      ctrl.abort()
+    }
+  })
 })
 
 describe('CORS for Tauri-webview cross-origin requests', () => {

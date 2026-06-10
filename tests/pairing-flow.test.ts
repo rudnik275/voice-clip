@@ -161,4 +161,107 @@ describe('desktop pairing handshake + /download/latest', () => {
       'https://github.com/rudnik275/voice-clip/releases/latest/download/latest.json',
     )
   })
+
+  test('pairing triggers lazy prune: stale device gone after second pairing >60d later', async () => {
+    // Use a controllable clock so we can simulate >60 days elapsing.
+    // Start at a fixed epoch.
+    let clock = 1_000_000_000_000
+
+    db = openDb(':memory:')
+    const googleFetcher = makeGoogleFetcher({ sub: 'g1', email: 'alice@example.com', name: 'Alice' })
+    const deps: ServerDeps = {
+      dataDir: dir,
+      port: 0,
+      useTls: false,
+      allowlist: ['alice@example.com'],
+      googleClientId: CLIENT_ID,
+      googleClientSecret: CLIENT_SECRET,
+      googleFetcher,
+      db,
+      now: () => clock,
+    }
+    server = await startServer(deps)
+    baseUrl = `http://localhost:${server.port}`
+    server.stop()
+    server = await startServer({ ...deps, publicUrl: baseUrl })
+    baseUrl = `http://localhost:${server.port}`
+
+    // First pairing at t=0.
+    const startR1 = await fetch(`${baseUrl}/desktop/auth/start`, { redirect: 'manual' })
+    const state1 = startR1.headers.getSetCookie().find((c) => c.startsWith('oauth_state='))!.split(';')[0]!.split('=')[1]!
+    const cb1 = await fetch(`${baseUrl}/desktop/auth/complete?code=fake&state=${state1}`, {
+      headers: { cookie: `oauth_state=${state1}` },
+      redirect: 'manual',
+    })
+    expect(cb1.status).toBe(302)
+    const token1 = new URL(cb1.headers.get('location')!).searchParams.get('token')!
+    const devices = createDevicesStore(db)
+    expect(devices.findByToken(token1)).not.toBeNull()
+
+    // Advance clock by 61 days (past the 60-day staleness window).
+    clock += 61 * 24 * 60 * 60 * 1000
+
+    // Two pairings within 24h of each other: only one prune should fire.
+    // Second pairing triggers the prune (clock advanced >24h since last prune).
+    const startR2 = await fetch(`${baseUrl}/desktop/auth/start`, { redirect: 'manual' })
+    const state2 = startR2.headers.getSetCookie().find((c) => c.startsWith('oauth_state='))!.split(';')[0]!.split('=')[1]!
+    const cb2 = await fetch(`${baseUrl}/desktop/auth/complete?code=fake&state=${state2}`, {
+      headers: { cookie: `oauth_state=${state2}` },
+      redirect: 'manual',
+    })
+    expect(cb2.status).toBe(302)
+
+    // The stale first device must have been pruned.
+    expect(devices.findByToken(token1)).toBeNull()
+  })
+
+  test('pairing within 24h of a previous prune does not prune again', async () => {
+    let clock = 1_000_000_000_000
+
+    db = openDb(':memory:')
+    const googleFetcher = makeGoogleFetcher({ sub: 'g1', email: 'alice@example.com', name: 'Alice' })
+    const deps: ServerDeps = {
+      dataDir: dir,
+      port: 0,
+      useTls: false,
+      allowlist: ['alice@example.com'],
+      googleClientId: CLIENT_ID,
+      googleClientSecret: CLIENT_SECRET,
+      googleFetcher,
+      db,
+      now: () => clock,
+    }
+    server = await startServer(deps)
+    baseUrl = `http://localhost:${server.port}`
+    server.stop()
+    server = await startServer({ ...deps, publicUrl: baseUrl })
+    baseUrl = `http://localhost:${server.port}`
+
+    // First pairing triggers first prune (nothing to prune yet).
+    const startR1 = await fetch(`${baseUrl}/desktop/auth/start`, { redirect: 'manual' })
+    const state1 = startR1.headers.getSetCookie().find((c) => c.startsWith('oauth_state='))!.split(';')[0]!.split('=')[1]!
+    await fetch(`${baseUrl}/desktop/auth/complete?code=fake&state=${state1}`, {
+      headers: { cookie: `oauth_state=${state1}` },
+      redirect: 'manual',
+    })
+
+    // Advance only 1 hour — below the 24h prune interval.
+    clock += 60 * 60 * 1000
+
+    // Second pairing within the same 24h window — prune guard fires, no DB sweep.
+    const startR2 = await fetch(`${baseUrl}/desktop/auth/start`, { redirect: 'manual' })
+    const state2 = startR2.headers.getSetCookie().find((c) => c.startsWith('oauth_state='))!.split(';')[0]!.split('=')[1]!
+    const cb2 = await fetch(`${baseUrl}/desktop/auth/complete?code=fake&state=${state2}`, {
+      headers: { cookie: `oauth_state=${state2}` },
+      redirect: 'manual',
+    })
+    // Second pairing must still succeed regardless of the prune guard.
+    expect(cb2.status).toBe(302)
+
+    // Both devices should still exist (nothing was old enough to prune).
+    const devices = createDevicesStore(db)
+    expect(devices.list(
+      devices.findByToken(new URL(cb2.headers.get('location')!).searchParams.get('token')!)!.user_id
+    )).toHaveLength(2)
+  })
 })
