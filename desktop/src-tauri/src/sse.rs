@@ -3,8 +3,26 @@
 //!
 //! Runs on a dedicated std thread (blocking reqwest) so the never-ending
 //! stream read never blocks Tauri's event loop. On every `data:` frame it
-//! parses the clip JSON, `pbcopy`s the text, then `POST /events/ack`s the
-//! seq back so the server can track delivery liveness.
+//! parses the clip JSON, deduplicates by `seq`, `pbcopy`s the text for new
+//! clips, then `POST /events/ack`s the seq back so the server deletes the
+//! pending delivery row and does not replay the clip on the next reconnect.
+//!
+//! ## At-least-once delivery contract
+//!
+//! The server keeps a `pending_deliveries` row for every clip until the client
+//! POSTs `/events/ack` with the matching `seq`. On reconnect all un-acked rows
+//! are replayed (oldest-first). To avoid double pbcopy the worker tracks the
+//! highest `seq` it has already written to the clipboard (`last_copied_seq`).
+//! For a replayed frame whose `seq <= last_copied_seq`, the clipboard is left
+//! untouched but the ack is still sent so the server discards the row.
+//!
+//! ## Ack reliability
+//!
+//! A failed ack means the server will replay the clip on the next reconnect.
+//! The dedupe guard makes that safe, but unnecessary round-trips are wasteful.
+//! `ack_with_retry` retries up to `ACK_MAX_ATTEMPTS` times with short backoff
+//! before giving up — the next reconnect's replay + dedupe is the last-resort
+//! safety net.
 //!
 //! Reconnect: full-jitter exponential backoff, base 1s, doubling, capped at
 //! 30s. Any disconnect (network drop, server restart, idle timeout) loops
@@ -30,6 +48,10 @@ use crate::clipboard::pbcopy;
 
 const BACKOFF_BASE_MS: u64 = 1_000;
 const BACKOFF_CAP_MS: u64 = 30_000;
+/// Number of ack POST attempts before giving up (initial try + retries).
+const ACK_MAX_ATTEMPTS: u32 = 3;
+/// Backoff delays between ack attempts (milliseconds): 250ms, 500ms, 1s.
+const ACK_RETRY_DELAYS_MS: &[u64] = &[250, 500, 1_000];
 /// TCP keepalive — detects half-open connections. Idle time before the OS
 /// starts probing a quiet socket. The server's 25s `: ping` heartbeat resets
 /// the idle timer on every live stream, so a probe only ever fires on a stream
@@ -134,6 +156,12 @@ where
             .expect("build reqwest client");
 
         let mut attempt: u32 = 0;
+        // Tracks the highest seq we have already written to the clipboard,
+        // persisted across reconnects within this process lifetime. Replayed
+        // frames (seq <= last_copied_seq) skip pbcopy but are still acked so
+        // the server removes the pending row and does not replay again.
+        let mut last_copied_seq: i64 = -1;
+
         while !stop_thread.load(Ordering::SeqCst) {
             on_status(if attempt == 0 {
                 ConnStatus::Connecting
@@ -168,9 +196,36 @@ where
                         }
                         match serde_json::from_str::<Clip>(payload) {
                             Ok(clip) => {
-                                if pbcopy(&clip.text).is_ok() {
-                                    ack(&client, &base_url, &device_token, clip.seq);
-                                    on_clip(&clip);
+                                let action = dedupe_action(clip.seq, last_copied_seq);
+                                match action {
+                                    ClipAction::Copy => {
+                                        if pbcopy(&clip.text).is_ok() {
+                                            last_copied_seq = clip.seq;
+                                            ack_with_retry(
+                                                &client,
+                                                &base_url,
+                                                &device_token,
+                                                clip.seq,
+                                            );
+                                            on_clip(&clip);
+                                        }
+                                        // If pbcopy failed we don't ack — the
+                                        // server will replay and we'll try again.
+                                    }
+                                    ClipAction::AckOnly => {
+                                        // Already copied in a previous connection;
+                                        // just ack so the server drops the pending row.
+                                        eprintln!(
+                                            "sse: seq {} already copied (last={}), skipping pbcopy",
+                                            clip.seq, last_copied_seq
+                                        );
+                                        ack_with_retry(
+                                            &client,
+                                            &base_url,
+                                            &device_token,
+                                            clip.seq,
+                                        );
+                                    }
                                 }
                             }
                             Err(e) => {
@@ -211,16 +266,65 @@ where
     SseClient { stop }
 }
 
-/// Best-effort delivery ack. A failed ack is non-fatal — the clip is already
-/// on the clipboard; the server only uses the ack for liveness.
-fn ack(client: &reqwest::blocking::Client, base_url: &str, token: &str, seq: i64) {
+/// Whether a clip should be written to the clipboard or only acked.
+#[derive(Debug, PartialEq, Eq)]
+enum ClipAction {
+    /// New seq — write to clipboard and ack.
+    Copy,
+    /// Already-seen seq (replayed by the server) — skip clipboard, still ack.
+    AckOnly,
+}
+
+/// Pure dedupe decision: given the incoming `seq` and the highest seq we have
+/// already copied, decide what to do. Extracted into a pure function so it can
+/// be unit-tested without any I/O.
+fn dedupe_action(seq: i64, last_copied_seq: i64) -> ClipAction {
+    if seq <= last_copied_seq {
+        ClipAction::AckOnly
+    } else {
+        ClipAction::Copy
+    }
+}
+
+/// Delivery ack with retry. POSTs `/events/ack` up to `ACK_MAX_ATTEMPTS` times
+/// with short backoff on transport failure or a non-2xx response. A failed ack
+/// means the server will replay the clip on the next reconnect; the dedupe guard
+/// (`last_copied_seq`) makes that safe without touching the clipboard twice.
+fn ack_with_retry(client: &reqwest::blocking::Client, base_url: &str, token: &str, seq: i64) {
     let url = format!("{}/events/ack", base_url.trim_end_matches('/'));
-    let _ = client
-        .post(&url)
-        .header("X-Device-Token", token)
-        .header("content-type", "application/json")
-        .body(serde_json::json!({ "seq": seq }).to_string())
-        .send();
+    let body = serde_json::json!({ "seq": seq }).to_string();
+
+    for attempt in 0..ACK_MAX_ATTEMPTS {
+        if attempt > 0 {
+            let delay_ms = ACK_RETRY_DELAYS_MS
+                .get((attempt - 1) as usize)
+                .copied()
+                .unwrap_or(1_000);
+            thread::sleep(Duration::from_millis(delay_ms));
+        }
+        match client
+            .post(&url)
+            .header("X-Device-Token", token)
+            .header("content-type", "application/json")
+            .body(body.clone())
+            .send()
+        {
+            Ok(resp) if resp.status().is_success() => return,
+            Ok(resp) => {
+                eprintln!(
+                    "sse: ack seq={seq} attempt={attempt} failed with status {}",
+                    resp.status()
+                );
+            }
+            Err(e) => {
+                eprintln!("sse: ack seq={seq} attempt={attempt} transport error: {e}");
+            }
+        }
+    }
+    eprintln!(
+        "sse: ack seq={seq} gave up after {ACK_MAX_ATTEMPTS} attempts — \
+         server will replay; dedupe guard will skip pbcopy"
+    );
 }
 
 #[cfg(test)]
@@ -243,5 +347,47 @@ mod tests {
         assert_eq!(c.seq, 42);
         assert_eq!(c.text, "привет");
         assert_eq!(c.source, "online");
+    }
+
+    // --- dedupe_action unit tests ---
+
+    #[test]
+    fn new_seq_when_no_prior_copy() {
+        // No clip copied yet (last = -1); any real seq should be copied.
+        assert_eq!(dedupe_action(0, -1), ClipAction::Copy);
+        assert_eq!(dedupe_action(1, -1), ClipAction::Copy);
+        assert_eq!(dedupe_action(100, -1), ClipAction::Copy);
+    }
+
+    #[test]
+    fn new_seq_advances_past_last() {
+        // A seq strictly greater than last_copied_seq → Copy.
+        assert_eq!(dedupe_action(6, 5), ClipAction::Copy);
+        assert_eq!(dedupe_action(100, 99), ClipAction::Copy);
+    }
+
+    #[test]
+    fn exact_same_seq_is_ack_only() {
+        // The same seq replayed from the server → AckOnly (do NOT touch the clipboard).
+        assert_eq!(dedupe_action(5, 5), ClipAction::AckOnly);
+        assert_eq!(dedupe_action(1, 1), ClipAction::AckOnly);
+    }
+
+    #[test]
+    fn older_seq_is_ack_only() {
+        // An older seq (gap in replay) → AckOnly.
+        assert_eq!(dedupe_action(3, 5), ClipAction::AckOnly);
+        assert_eq!(dedupe_action(0, 10), ClipAction::AckOnly);
+    }
+
+    #[test]
+    fn simulate_replay_after_reconnect() {
+        // Scenario: process copied seqs 1, 2, 3 before disconnect.
+        // On reconnect the server replays 2, 3 (not yet acked), then streams 4.
+        // Expected: 2 and 3 → AckOnly; 4 → Copy.
+        let last = 3_i64;
+        assert_eq!(dedupe_action(2, last), ClipAction::AckOnly);
+        assert_eq!(dedupe_action(3, last), ClipAction::AckOnly);
+        assert_eq!(dedupe_action(4, last), ClipAction::Copy);
     }
 }
