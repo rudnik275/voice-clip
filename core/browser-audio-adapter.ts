@@ -104,6 +104,11 @@ export class BrowserAudioAdapter implements AudioAdapter {
     for (const t of this.stream?.getTracks() ?? []) t.enabled = false;
   }
 
+  /** True while a pause span is open (set by pause(), cleared by resume()). */
+  private get isPaused(): boolean {
+    return this.pauseStartedAt !== 0;
+  }
+
   /** invariant 7: prime the audio session, then re-enable the track. */
   resume(): void {
     this.primeAudioSession();
@@ -154,6 +159,14 @@ export class BrowserAudioAdapter implements AudioAdapter {
         this.stopMetering();
         for (const t of this.stream?.getTracks() ?? []) t.stop();
         const blob = new Blob(this.chunks, mime ? { type: mime } : undefined);
+        // Stop-while-paused (paused --STOP--> finalizing) leaves an OPEN pause
+        // span: pause() set pauseStartedAt but no resume() folded it into
+        // pausedAccumMs. Fold it now (and clear it so a double-fold can't happen
+        // if resume() had already run — resume() resets pauseStartedAt to 0).
+        if (this.pauseStartedAt) {
+          this.pausedAccumMs += Date.now() - this.pauseStartedAt;
+          this.pauseStartedAt = 0;
+        }
         const durationMs = Date.now() - this.startedAt - this.pausedAccumMs;
         const stats = this.meter.summary();
         resolve({ blob, mime, durationMs, recordedAt: this.startedAt, stats });
@@ -215,7 +228,11 @@ export class BrowserAudioAdapter implements AudioAdapter {
       if (!this.analyser || !this.meterData) return;
       this.analyser.getByteTimeDomainData(this.meterData);
       const frame = bytesToFloat(this.meterData);
-      this.meter.push(frame);
+      // Exclude paused frames from the gate STATS: while paused the track is
+      // disabled and yields flat/silent frames; pushing them would drag
+      // voiceFraction below VOICE_FRACTION_MIN and reject otherwise-good clips
+      // (issue #134 bug 2). The live level() needle keeps updating regardless.
+      if (!this.isPaused) this.meter.push(frame);
       this.smoothed = smoothLevel(this.smoothed, levelTarget(rms(frame)));
       this.meterRaf = requestAnimationFrame(tick);
     };

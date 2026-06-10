@@ -276,3 +276,99 @@ describe('BrowserAudioAdapter — iOS invariants', () => {
     expect(a.isTrackLive()).toBe(false);
   });
 });
+
+// ---- issue #134: pause-related duration + metering bugs -------------------
+
+describe('BrowserAudioAdapter — durationMs excludes pause spans (issue #134 bug 1)', () => {
+  // Date.now is the adapter's only clock for duration; stub it so the test is
+  // deterministic without real sleeps.
+  let realNow: () => number;
+  let clock = 0;
+  beforeEach(() => {
+    realNow = Date.now;
+    clock = 1_000_000;
+    Date.now = () => clock;
+  });
+  afterEach(() => {
+    Date.now = realNow;
+  });
+
+  test('stop while PAUSED subtracts the still-open pause span', async () => {
+    const a = new BrowserAudioAdapter();
+    await a.acquire();
+    a.start(250); // startedAt = 1_000_000
+    clock += 2_000; // 2s of actual recording
+    a.pause(); // pause span opens at 1_002_000
+    clock += 240_000; // 4 minutes paused
+    // finalize WITHOUT resume() — the open pause span must be folded out
+    const clip = await a.finalize();
+    expect(clip.durationMs).toBe(2_000); // not ~242_000
+  });
+
+  test('pause → resume → stop counts both recorded spans, not the pause', async () => {
+    const a = new BrowserAudioAdapter();
+    await a.acquire();
+    a.start(250); // startedAt = 1_000_000
+    clock += 2_000; // record 2s
+    a.pause();
+    clock += 5_000; // pause 5s
+    a.resume(); // folds 5s into pausedAccumMs
+    clock += 3_000; // record 3s more
+    const clip = await a.finalize();
+    expect(clip.durationMs).toBe(5_000); // 2s + 3s recorded, 5s pause excluded
+  });
+
+  test('resume() before stop does not get double-folded by finalize()', async () => {
+    const a = new BrowserAudioAdapter();
+    await a.acquire();
+    a.start(250);
+    clock += 1_000;
+    a.pause();
+    clock += 4_000;
+    a.resume(); // pauseStartedAt reset to 0 here
+    clock += 1_000;
+    const clip = await a.finalize();
+    // 2s recorded, single 4s pause excluded (NOT 8s from a double-fold)
+    expect(clip.durationMs).toBe(2_000);
+  });
+});
+
+describe('BrowserAudioAdapter — meter excludes paused frames (issue #134 bug 2)', () => {
+  // The metering loop is rAF-driven; the suite default stubs rAF to a no-op, so
+  // here we capture the registered tick callback and invoke it manually to drive
+  // metering deterministically through the same seam the adapter uses.
+  let capturedTick: (() => void) | null = null;
+  beforeEach(() => {
+    capturedTick = null;
+    (globalThis as any).requestAnimationFrame = (fn: () => void) => {
+      capturedTick = fn;
+      return 1;
+    };
+  });
+
+  test('frames pushed while paused do not change summary() stats', async () => {
+    const a = new BrowserAudioAdapter();
+    await a.acquire();
+    a.start(250);
+
+    // Drive several metering ticks while RECORDING. The fake analyser fills
+    // silence (128 → 0.0 rms), so to get a measurable signal we feed a loud
+    // frame by swapping the analyser's data filler.
+    const analyser: any = (a as any).analyser;
+    analyser.getByteTimeDomainData = (arr: Uint8Array) => arr.fill(255); // loud
+    for (let i = 0; i < 5; i++) capturedTick!();
+    const recordingStats = a['meter'].summary();
+    expect(recordingStats.voiceFraction).toBeGreaterThan(0);
+    const framesWhileRecording = a['meter'].frameCount;
+
+    // Now PAUSE and drive many more ticks: a disabled track yields flat/silent
+    // frames. These must NOT be ingested into the gate stats.
+    a.pause();
+    analyser.getByteTimeDomainData = (arr: Uint8Array) => arr.fill(128); // silence
+    for (let i = 0; i < 100; i++) capturedTick!();
+
+    expect(a['meter'].frameCount).toBe(framesWhileRecording); // paused frames excluded
+    const afterPauseStats = a['meter'].summary();
+    expect(afterPauseStats).toEqual(recordingStats); // stats unchanged by the pause
+  });
+});

@@ -174,6 +174,13 @@ export const useRecorderStore = defineStore('recorder', () => {
       if (state.value === 'recording') {
         machine.send('BACKGROUNDED')
         backgrounded = true
+      } else if (state.value === 'paused') {
+        // Already paused (manual pause) when the app backgrounds: the machine
+        // has no BACKGROUNDED edge from 'paused', so don't send an event — just
+        // arm `backgrounded` so FOREGROUNDED fires on return and the dead-track
+        // guard runs. Otherwise a track iOS kills while we're backgrounded+paused
+        // would be re-enabled on manual resume and record silence (issue #134).
+        backgrounded = true
       } else if (state.value === 'idle') {
         // Idle + backgrounded: drop the UI-sound context so the iOS audio
         // session fully releases (otherwise the lock screen shows a "Now
