@@ -4,6 +4,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { startServer, type ServerDeps } from '../src/server'
 import type { GoogleFetcher } from '../src/google-oauth'
+import { openDb, type DB } from '../src/db'
+import { createUsersStore } from '../src/users-store'
+import { createInvitesStore } from '../src/invites-store'
 
 const CLIENT_ID = 'test-client.apps.googleusercontent.com'
 const CLIENT_SECRET = 'test-secret'
@@ -296,5 +299,151 @@ describe('invite-link signup flow', () => {
       headers: { cookie: `session=${r.session}` },
     }).then((rr) => rr.json())) as { is_owner: boolean }
     expect(me.is_owner).toBe(true)
+  })
+
+  // Spin up a server backed by a caller-supplied DB handle so the test can
+  // inspect the users/invites tables directly after a request.
+  async function startWithDb(
+    db: DB,
+    fetcher: GoogleFetcher,
+    opts: { ownerEmail?: string; allowlist?: string[]; adminToken?: string } = {},
+  ) {
+    const deps: ServerDeps = {
+      dataDir: dir,
+      db,
+      port: 0,
+      useTls: false,
+      allowlist: opts.allowlist ?? [],
+      ownerEmail: opts.ownerEmail,
+      adminToken: opts.adminToken,
+      googleClientId: CLIENT_ID,
+      googleClientSecret: CLIENT_SECRET,
+      publicUrl: 'http://localhost',
+      googleFetcher: fetcher,
+    }
+    server = await startServer(deps)
+    baseUrl = `http://127.0.0.1:${server.port}`
+  }
+
+  test('bogus invite cookie + non-allowlisted email → 403 AND no user row created', async () => {
+    const db = openDb(':memory:')
+    await startWithDb(
+      db,
+      googleFetcher({ sub: 'g-attacker', email: 'attacker@example.com', name: 'Attacker' }),
+      { allowlist: [OWNER_EMAIL] },
+    )
+
+    const r = await runOAuth(baseUrl, googleFetcher({}), 'invite=garbage')
+    expect(r.status).toBe(403)
+    expect(r.session).toBeNull()
+
+    // The whole point of the fix: a denied sign-in leaves the users table
+    // untouched — no drive-by row from the attacker-controlled invite cookie.
+    const users = createUsersStore(db)
+    expect(users.findByEmail('attacker@example.com')).toBeNull()
+  })
+
+  test('valid invite end-to-end records used_by_user_id with the new user id', async () => {
+    const db = openDb(':memory:')
+    // Owner signs in + generates an invite.
+    await startWithDb(
+      db,
+      googleFetcher({ sub: 'g-owner', email: OWNER_EMAIL, name: 'Owner' }),
+      { allowlist: [OWNER_EMAIL], ownerEmail: OWNER_EMAIL, adminToken: 'tok' },
+    )
+    const ownerLogin = await runOAuth(
+      baseUrl,
+      googleFetcher({ sub: 'g-owner', email: OWNER_EMAIL, name: 'Owner' }),
+    )
+    expect(ownerLogin.session).not.toBeNull()
+    const gen = (await fetch(`${baseUrl}/admin/invites`, {
+      method: 'POST',
+      headers: { cookie: `session=${ownerLogin.session}` },
+    }).then((r) => r.json())) as { token: string }
+
+    // Friend completes OAuth carrying the invite cookie (same DB, fresh server
+    // with the friend's identity).
+    server.stop()
+    await startWithDb(
+      db,
+      googleFetcher({ sub: 'g-friend', email: 'friend@example.com', name: 'Friend' }),
+      { allowlist: [OWNER_EMAIL], ownerEmail: OWNER_EMAIL },
+    )
+    const friend = await runOAuth(
+      baseUrl,
+      googleFetcher({ sub: 'g-friend', email: 'friend@example.com', name: 'Friend' }),
+      `invite=${gen.token}`,
+    )
+    expect(friend.status).toBe(302)
+    expect(friend.session).not.toBeNull()
+
+    const users = createUsersStore(db)
+    const invites = createInvitesStore(db)
+    const friendUser = users.findByEmail('friend@example.com')
+    expect(friendUser).not.toBeNull()
+    const row = invites.get(gen.token)
+    expect(row?.used_at).toBeGreaterThan(0)
+    expect(row?.used_by_email).toBe('friend@example.com')
+    // Backfilled to the just-created user, not left NULL.
+    expect(row?.used_by_user_id).toBe(friendUser!.id)
+  })
+
+  test('double-use: already-consumed token + different non-allowlisted account → 403, no new user, record intact', async () => {
+    const db = openDb(':memory:')
+    // Owner + invite + first friend consume (reuse the prior flow inline).
+    await startWithDb(
+      db,
+      googleFetcher({ sub: 'g-owner', email: OWNER_EMAIL, name: 'Owner' }),
+      { allowlist: [OWNER_EMAIL], ownerEmail: OWNER_EMAIL },
+    )
+    const ownerLogin = await runOAuth(
+      baseUrl,
+      googleFetcher({ sub: 'g-owner', email: OWNER_EMAIL, name: 'Owner' }),
+    )
+    const gen = (await fetch(`${baseUrl}/admin/invites`, {
+      method: 'POST',
+      headers: { cookie: `session=${ownerLogin.session}` },
+    }).then((r) => r.json())) as { token: string }
+
+    server.stop()
+    await startWithDb(
+      db,
+      googleFetcher({ sub: 'g-f1', email: 'f1@example.com', name: 'Friend One' }),
+      { allowlist: [OWNER_EMAIL], ownerEmail: OWNER_EMAIL },
+    )
+    const f1 = await runOAuth(
+      baseUrl,
+      googleFetcher({ sub: 'g-f1', email: 'f1@example.com', name: 'Friend One' }),
+      `invite=${gen.token}`,
+    )
+    expect(f1.session).not.toBeNull()
+
+    const invites = createInvitesStore(db)
+    const users = createUsersStore(db)
+    const f1User = users.findByEmail('f1@example.com')!
+    const originalRow = invites.get(gen.token)!
+
+    // Friend #2 replays the same (now-used) token with a different,
+    // non-allowlisted Google account.
+    server.stop()
+    await startWithDb(
+      db,
+      googleFetcher({ sub: 'g-f2', email: 'f2@example.com', name: 'Friend Two' }),
+      { allowlist: [OWNER_EMAIL], ownerEmail: OWNER_EMAIL },
+    )
+    const f2 = await runOAuth(
+      baseUrl,
+      googleFetcher({ sub: 'g-f2', email: 'f2@example.com', name: 'Friend Two' }),
+      `invite=${gen.token}`,
+    )
+    expect(f2.status).toBe(403)
+    expect(f2.session).toBeNull()
+
+    // f2 got no user row, and f1's consumption record is untouched.
+    expect(users.findByEmail('f2@example.com')).toBeNull()
+    const rowAfter = invites.get(gen.token)!
+    expect(rowAfter.used_by_user_id).toBe(f1User.id)
+    expect(rowAfter.used_by_email).toBe('f1@example.com')
+    expect(rowAfter.used_at).toBe(originalRow.used_at)
   })
 })
