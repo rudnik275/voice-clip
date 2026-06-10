@@ -6,6 +6,9 @@ import { BrowserAudioAdapter } from '../../../core/browser-audio-adapter'
 import { createUploader } from '../../../core/uploader'
 import type { SendResult } from '../../../core/uploader'
 import type { Uploader } from '../../../core/ports'
+import { createOfflineSync, withOfflineFallback } from '../../../core/offline-sync'
+import type { OfflineQueue, OfflineSync } from '../../../core/offline-sync'
+import { createIdbOfflineQueue } from '../offline-queue-idb'
 import { handleUnauthorized } from './session'
 import {
   playStartRec,
@@ -43,6 +46,16 @@ export type StatusKind = 'info' | 'error' | 'success'
 export type Status = { kind: StatusKind; text: string; preview?: string } | null
 
 const STATUS_MS = 4200
+/** Retry cadence while the offline queue is non-empty (CLAUDE.md offline protocol). */
+const OFFLINE_RETRY_MS = 60_000
+
+// Test seam: Bun's test runtime has no `indexedDB`, and tests need a fake
+// queue to drive the wiring. Swap the factory BEFORE the store is first used.
+let offlineQueueFactory: () => OfflineQueue | null = () =>
+  typeof indexedDB !== 'undefined' ? createIdbOfflineQueue() : null
+export function __setOfflineQueueFactory(f: () => OfflineQueue | null): void {
+  offlineQueueFactory = f
+}
 
 export const useRecorderStore = defineStore('recorder', () => {
   const state = ref<RecorderState>('idle')
@@ -99,13 +112,56 @@ export const useRecorderStore = defineStore('recorder', () => {
     return { ok: r.ok, status: r.status, text }
   }
 
+  // ---- offline upload queue (issue #140) -----------------------------------
+  //
+  // When the online upload fails with a TRANSPORT error (offline, DNS, reset),
+  // the clip is persisted to IndexedDB and drained later with source=offline +
+  // the original recordedAt (server inserts history only — #128). The queue
+  // logic lives in core/offline-sync.ts; this store only wires the four drain
+  // triggers: store init (app load), window 'online', after every successful
+  // online upload, and a 60s retry while items remain.
+  const offlineQueue = offlineQueueFactory()
+  const offlineSync: OfflineSync | null = offlineQueue
+    ? createOfflineSync({ queue: offlineQueue, send })
+    : null
+  // set by the uploader fallback when the CURRENT clip lands in the queue —
+  // the transcribing→idle transition then shows the honest "saved offline"
+  // toast instead of faking a transcription success.
+  let queuedOffline = false
+  let offlineRetryTimer: ReturnType<typeof setTimeout> | 0 = 0
+
+  function scheduleOfflineRetry(keep: boolean): void {
+    if (offlineRetryTimer) {
+      clearTimeout(offlineRetryTimer)
+      offlineRetryTimer = 0
+    }
+    if (keep) offlineRetryTimer = setTimeout(drainOffline, OFFLINE_RETRY_MS)
+  }
+
+  function drainOffline(): void {
+    if (!offlineSync) return
+    void offlineSync
+      .drain()
+      .then(({ remaining }) => scheduleOfflineRetry(remaining > 0))
+      .catch(() => scheduleOfflineRetry(true))
+  }
+
+  if (offlineSync) {
+    // trigger 2: the browser reports connectivity is back
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      window.addEventListener('online', drainOffline)
+    }
+    // trigger 1: app load (the store is constructed once the session resolves)
+    drainOffline()
+  }
+
   function ensureInit(): void {
     if (inited) return
     adapter = new BrowserAudioAdapter()
     const base = createUploader({ send })
     // Wrap the core uploader so the store can capture the transcript text for
     // the clipboard — the machine only inspects res.ok and discards the text.
-    const uploader: Uploader = {
+    const wrapped: Uploader = {
       async upload(clip) {
         const res = await base.upload(clip)
         if (res.ok) {
@@ -116,10 +172,22 @@ export const useRecorderStore = defineStore('recorder', () => {
           // instance is registered in some test setups).
           const { useSessionStore } = await import('./session')
           useSessionStore().refresh().catch(() => {})
+          // trigger 3: every successful online upload drains the queue
+          drainOffline()
         }
         return res
       },
     }
+    // Outermost layer: transport failure → persist to IndexedDB and report
+    // success to the machine (it returns to idle; the clip is safe, not lost).
+    // `queuedOffline` makes the idle transition show the offline toast.
+    const uploader: Uploader = offlineSync
+      ? withOfflineFallback(wrapped, offlineSync, () => {
+          queuedOffline = true
+          // trigger 4: keep the 60s retry alive while the item waits
+          scheduleOfflineRetry(true)
+        })
+      : wrapped
     machine = new RecorderMachine({ adapter, uploader })
     machine.subscribe(onSnapshot)
     document.addEventListener('visibilitychange', onVisibility)
@@ -150,12 +218,23 @@ export const useRecorderStore = defineStore('recorder', () => {
 
     // ---- success: transcribing → idle ----
     if (from === 'transcribing' && snap.state === 'idle') {
-      finishClipboard(true)
-      playSuccess()
-      // Short title + the transcript as a (line-clamped) preview body — same
-      // split the pre-Vue app.ts used, so a long transcript stays 2 lines tall
-      // instead of dumping the whole text into the toast and covering the screen.
-      showStatus('success', 'Готово', lastText.value || undefined)
+      if (queuedOffline) {
+        // The clip landed in the offline queue, not on the server: there is no
+        // transcript yet, so reject the pending ClipboardItem (nothing to
+        // copy), skip the success bell (it would be a lie; no sound — the
+        // error buzzer would be scarier than the situation warrants), and
+        // tell the truth in the toast.
+        queuedOffline = false
+        finishClipboard(false)
+        showStatus('info', 'Сохранено офлайн — отправится при подключении')
+      } else {
+        finishClipboard(true)
+        playSuccess()
+        // Short title + the transcript as a (line-clamped) preview body — same
+        // split the pre-Vue app.ts used, so a long transcript stays 2 lines tall
+        // instead of dumping the whole text into the toast and covering the screen.
+        showStatus('success', 'Готово', lastText.value || undefined)
+      }
     }
 
     // ---- failure: any → error ----
