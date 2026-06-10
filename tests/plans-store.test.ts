@@ -45,6 +45,24 @@ describe('plans-store', () => {
     expect(plans.getUsage(user.id, '2026-06')).toBe(1)
   })
 
+  test('decrementUsage() refunds a reservation and floors at 0', () => {
+    const { plans, user } = setup()
+    plans.incrementUsage(user.id, '2026-05')
+    plans.incrementUsage(user.id, '2026-05')
+    expect(plans.decrementUsage(user.id, '2026-05')).toBe(1)
+    expect(plans.getUsage(user.id, '2026-05')).toBe(1)
+    expect(plans.decrementUsage(user.id, '2026-05')).toBe(0)
+    // Floor: extra refunds can't drive the counter negative.
+    expect(plans.decrementUsage(user.id, '2026-05')).toBe(0)
+    expect(plans.getUsage(user.id, '2026-05')).toBe(0)
+  })
+
+  test('decrementUsage() on a non-existent row is a no-op returning 0', () => {
+    const { plans, user } = setup()
+    expect(plans.decrementUsage(user.id, '2026-05')).toBe(0)
+    expect(plans.getUsage(user.id, '2026-05')).toBe(0)
+  })
+
   test('getUsage() returns 0 when no row exists yet', () => {
     const { plans, user } = setup()
     expect(plans.getUsage(user.id, '2026-05')).toBe(0)

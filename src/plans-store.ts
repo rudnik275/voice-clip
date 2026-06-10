@@ -27,6 +27,7 @@ export interface PlansStore {
   getPlan(userId: string): Plan
   setPlan(userId: string, plan: Plan): void
   incrementUsage(userId: string, monthKey: string): number
+  decrementUsage(userId: string, monthKey: string): number
   getUsage(userId: string, monthKey: string): number
 }
 
@@ -59,6 +60,14 @@ export function createPlansStore(db: DB, now: () => number = Date.now): PlansSto
      SET clips_count = clips_count + 1
      RETURNING *`,
   )
+  // Refund a reservation. max(0, ...) floors at zero so a stray refund can't
+  // drive the counter negative. RETURNING gives the post-decrement value.
+  const decrementUsageStmt = db.query<UsageRow, [string, string]>(
+    `UPDATE usage_counters
+     SET clips_count = MAX(0, clips_count - 1)
+     WHERE user_id = ? AND month_key = ?
+     RETURNING *`,
+  )
   const selectUsage = db.query<{ clips_count: number }, [string, string]>(
     'SELECT clips_count FROM usage_counters WHERE user_id = ? AND month_key = ?',
   )
@@ -74,6 +83,10 @@ export function createPlansStore(db: DB, now: () => number = Date.now): PlansSto
     },
     incrementUsage(userId: string, monthKey: string): number {
       const row = incrementUsageStmt.get(userId, monthKey)
+      return row?.clips_count ?? 0
+    },
+    decrementUsage(userId: string, monthKey: string): number {
+      const row = decrementUsageStmt.get(userId, monthKey)
       return row?.clips_count ?? 0
     },
     getUsage(userId: string, monthKey: string): number {

@@ -63,7 +63,7 @@ describe('quota gate (free tier monthly limit)', () => {
   let server: Awaited<ReturnType<typeof startServer>>
   let baseUrl: string
 
-  async function start(limit: number) {
+  async function start(limit: number, over: Partial<ServerDeps> = {}) {
     const deps: ServerDeps = {
       dataDir: dir,
       port: 0,
@@ -79,6 +79,7 @@ describe('quota gate (free tier monthly limit)', () => {
         name: 'Alice',
       }),
       transcribe: async (): Promise<TranscriptionResult> => ({ text: 'stub', usage: undefined }),
+      ...over,
     }
     server = await startServer(deps)
     baseUrl = `http://127.0.0.1:${server.port}`
@@ -197,6 +198,64 @@ describe('quota gate (free tier monthly limit)', () => {
       body: audioForm(),
     })
     expect(r2.status).toBe(200)
+  })
+
+  test('atomic reservation: N parallel uploads at used=L-1 → exactly 1 succeeds, counter == L', async () => {
+    // Delayed transcribe forces the requests to overlap inside the route, so
+    // the old check-then-act gate (getUsage → await transcribe → increment)
+    // would have let all three through. The atomic reserve-first gate must
+    // admit exactly one.
+    await start(3, {
+      transcribe: async (): Promise<TranscriptionResult> => {
+        await new Promise((r) => setTimeout(r, 150))
+        return { text: 'stub', usage: undefined }
+      },
+    })
+    const s = await signIn(baseUrl)
+    // Prime to used = L-1 = 2 (sequential).
+    expect((await fetch(`${baseUrl}/upload`, { method: 'POST', headers: { cookie: `session=${s}` }, body: audioForm() })).status).toBe(200)
+    expect((await fetch(`${baseUrl}/upload`, { method: 'POST', headers: { cookie: `session=${s}` }, body: audioForm() })).status).toBe(200)
+
+    // Fire 3 concurrently — only the last slot (used 2→3) is available.
+    const results = await Promise.all(
+      [0, 1, 2].map(() =>
+        fetch(`${baseUrl}/upload`, { method: 'POST', headers: { cookie: `session=${s}` }, body: audioForm() }),
+      ),
+    )
+    const statuses = results.map((r) => r.status).sort()
+    expect(statuses).toEqual([200, 402, 402])
+
+    // Counter must land exactly at the limit, not L-1+N.
+    const me = (await fetch(`${baseUrl}/me`, { headers: { cookie: `session=${s}` } }).then((r) => r.json())) as {
+      usage: { clips_this_month: number }
+    }
+    expect(me.usage.clips_this_month).toBe(3)
+  })
+
+  test('refund: a failed transcription does not consume quota', async () => {
+    let fail = true
+    await start(2, {
+      transcribe: async (): Promise<TranscriptionResult> => {
+        if (fail) throw new Error('boom')
+        return { text: 'stub', usage: undefined }
+      },
+    })
+    const s = await signIn(baseUrl)
+
+    // First upload fails (transcription throws) — must NOT consume a slot.
+    const failed = await fetch(`${baseUrl}/upload`, { method: 'POST', headers: { cookie: `session=${s}` }, body: audioForm() })
+    expect(failed.status).toBe(502)
+    let me = (await fetch(`${baseUrl}/me`, { headers: { cookie: `session=${s}` } }).then((r) => r.json())) as {
+      usage: { clips_this_month: number }
+    }
+    expect(me.usage.clips_this_month).toBe(0)
+
+    // Now let transcription succeed — both slots should still be available.
+    fail = false
+    expect((await fetch(`${baseUrl}/upload`, { method: 'POST', headers: { cookie: `session=${s}` }, body: audioForm() })).status).toBe(200)
+    expect((await fetch(`${baseUrl}/upload`, { method: 'POST', headers: { cookie: `session=${s}` }, body: audioForm() })).status).toBe(200)
+    me = (await fetch(`${baseUrl}/me`, { headers: { cookie: `session=${s}` } }).then((r) => r.json())) as typeof me
+    expect(me.usage.clips_this_month).toBe(2)
   })
 
   test('/pro page renders with brutalism CTA', async () => {
