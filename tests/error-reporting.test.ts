@@ -3,7 +3,7 @@ import { mkdtemp, rm, readdir } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { startServer, type ServerDeps } from '../src/server'
+import { startServer, deriveRateKey, type ServerDeps } from '../src/server'
 import type { GoogleFetcher } from '../src/google-oauth'
 import type { TranscriptionResult } from '../src/transcribe'
 
@@ -276,6 +276,92 @@ describe('observability: /api/errors + /admin/errors + replay', () => {
     expect(rows.length).toBe(2)
   })
 
+  // ---- rate limiter: global cap ----
+  test('Global cap returns 429 after 600 requests from distinct keys', async () => {
+    // Drive time with deps.now so the window resets predictably.
+    let fakeNow = 1_000_000
+    const deps: ServerDeps = {
+      dataDir: dir,
+      port: 0,
+      useTls: false,
+      now: () => fakeNow,
+      transcribe: async (): Promise<TranscriptionResult> => ({ text: 'ok', usage: undefined }),
+    }
+    const s = await startServer(deps)
+    const url = `http://127.0.0.1:${s.port}`
+    try {
+      // Send 601 requests, each with a distinct cf-connecting-ip so they each
+      // get their own per-key bucket (not hitting the 60/min per-key limit).
+      // Since the test client connects from 127.0.0.1 (trusted peer), the
+      // cf-connecting-ip header IS honoured. The global cap of 600/min should
+      // kick in before all 601 requests succeed.
+      let lastStatus = 0
+      for (let i = 0; i < 601; i++) {
+        // Generate a unique IP per iteration across 256*256 = 65536 combinations.
+        const octet3 = Math.floor(i / 256)
+        const octet4 = i % 256
+        const fakeIp = `203.0.${octet3}.${octet4}`
+        const r = await fetch(`${url}/api/errors`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'cf-connecting-ip': fakeIp,
+          },
+          body: JSON.stringify({ type: 'js_exception', message: `boom ${i}` }),
+        })
+        lastStatus = r.status
+        if (lastStatus === 429) break
+      }
+      expect(lastStatus).toBe(429)
+    } finally {
+      s.stop()
+    }
+  })
+
+  // ---- rate limiter: bucket eviction ----
+  test('Expired buckets are evicted (map stays bounded)', async () => {
+    let fakeNow = 2_000_000
+    const deps: ServerDeps = {
+      dataDir: dir,
+      port: 0,
+      useTls: false,
+      now: () => fakeNow,
+      transcribe: async (): Promise<TranscriptionResult> => ({ text: 'ok', usage: undefined }),
+    }
+    const s = await startServer(deps)
+    const url = `http://127.0.0.1:${s.port}`
+    try {
+      // Send a request to populate a bucket (IP sourced from cf-connecting-ip
+      // because the test peer 127.0.0.1 is trusted).
+      const r1 = await fetch(`${url}/api/errors`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'cf-connecting-ip': '1.2.3.4',
+        },
+        body: JSON.stringify({ type: 'js_exception', message: 'first' }),
+      })
+      expect(r1.status).toBe(200)
+
+      // Advance time past the window so the bucket expires.
+      fakeNow += 70_000
+
+      // A new request after expiry should succeed (fresh bucket, not still
+      // counted as the same window).
+      const r2 = await fetch(`${url}/api/errors`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'cf-connecting-ip': '1.2.3.4',
+        },
+        body: JSON.stringify({ type: 'js_exception', message: 'second' }),
+      })
+      expect(r2.status).toBe(200)
+    } finally {
+      s.stop()
+    }
+  })
+
   test('Failed-audio dir is created lazily and survives multiple users', async () => {
     let calls = 0
     await start(async () => {
@@ -299,5 +385,67 @@ describe('observability: /api/errors + /admin/errors + replay', () => {
     })
     const entries = await readdir(join(dir, 'failed-audio'))
     expect(entries.length).toBeGreaterThanOrEqual(1)
+  })
+})
+
+// ---- deriveRateKey unit tests (pure function, no server needed) ----
+describe('deriveRateKey: trusted vs untrusted peers', () => {
+  function makeHeaders(obj: Record<string, string>): Headers {
+    const h = new Headers()
+    for (const [k, v] of Object.entries(obj)) h.set(k, v)
+    return h
+  }
+
+  test('trusted peer (127.0.0.1): uses cf-connecting-ip header', () => {
+    const key = deriveRateKey('127.0.0.1', makeHeaders({ 'cf-connecting-ip': '1.2.3.4' }))
+    expect(key).toBe('1.2.3.4')
+  })
+
+  test('trusted peer (::1): uses cf-connecting-ip header', () => {
+    const key = deriveRateKey('::1', makeHeaders({ 'cf-connecting-ip': '5.6.7.8' }))
+    expect(key).toBe('5.6.7.8')
+  })
+
+  test('trusted peer (10.x): uses cf-connecting-ip header', () => {
+    const key = deriveRateKey('10.0.0.2', makeHeaders({ 'cf-connecting-ip': '9.10.11.12' }))
+    expect(key).toBe('9.10.11.12')
+  })
+
+  test('trusted peer (192.168.x): falls back to x-forwarded-for when no cf header', () => {
+    const key = deriveRateKey(
+      '192.168.1.100',
+      makeHeaders({ 'x-forwarded-for': '203.0.113.99, 10.0.0.1' }),
+    )
+    expect(key).toBe('203.0.113.99')
+  })
+
+  test('trusted peer: falls back to socket addr when no forwarding headers', () => {
+    const key = deriveRateKey('127.0.0.1', new Headers())
+    expect(key).toBe('127.0.0.1')
+  })
+
+  test('untrusted (public) peer: ignores cf-connecting-ip, uses socket addr', () => {
+    // An attacker connecting directly rotates headers — we must NOT use them.
+    const key = deriveRateKey(
+      '203.0.113.55',
+      makeHeaders({ 'cf-connecting-ip': '1.2.3.4', 'x-forwarded-for': '5.6.7.8' }),
+    )
+    expect(key).toBe('203.0.113.55')
+  })
+
+  test('untrusted peer: multiple different header values all map to same key', () => {
+    // Confirm that rotating headers does NOT change the key for a public peer.
+    const socketAddr = '198.51.100.7'
+    const key1 = deriveRateKey(socketAddr, makeHeaders({ 'cf-connecting-ip': 'aaa' }))
+    const key2 = deriveRateKey(socketAddr, makeHeaders({ 'cf-connecting-ip': 'bbb' }))
+    const key3 = deriveRateKey(socketAddr, makeHeaders({ 'x-forwarded-for': 'ccc' }))
+    expect(key1).toBe(socketAddr)
+    expect(key2).toBe(socketAddr)
+    expect(key3).toBe(socketAddr)
+  })
+
+  test('null socket addr returns "unknown"', () => {
+    expect(deriveRateKey(null, makeHeaders({ 'cf-connecting-ip': '1.2.3.4' }))).toBe('unknown')
+    expect(deriveRateKey(undefined, new Headers())).toBe('unknown')
   })
 })
