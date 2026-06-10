@@ -140,5 +140,27 @@ export const useSessionStore = defineStore('session', () => {
     await load()
   }
 
-  return { me, status, isAuthenticated, initial, load, retry }
+  /**
+   * Lightweight background refresh — re-fetches /me and updates `me` without
+   * touching `status` (so the authenticated app shell stays mounted). Only
+   * called from places that already know the user is logged in (profile modal
+   * open, upload success). On a 401 it funnels into handleUnauthorized() like
+   * attempt() does. On any other error it silently swallows the failure (stale
+   * data is acceptable; a crash surface is not).
+   */
+  async function refresh(): Promise<void> {
+    try {
+      const res = await fetch('/me', { credentials: 'same-origin' })
+      if (res.status === 401) {
+        handleUnauthorized()
+        return
+      }
+      if (!res.ok) return
+      me.value = (await res.json()) as Me
+    } catch {
+      // network error — keep stale data, don't disrupt the UI
+    }
+  }
+
+  return { me, status, isAuthenticated, initial, load, retry, refresh }
 })

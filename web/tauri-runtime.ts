@@ -84,6 +84,19 @@ if (tauri) {
     )
     if (token) headers.set('X-Device-Token', token)
 
+    // When the caller passed a Request object, use the Request copy-constructor
+    // to preserve method, body, credentials, etc. — then layer our merged init
+    // (with the patched headers) on top. Without this, spreading `{ ...init,
+    // headers }` into a plain-object init silently drops everything that wasn't
+    // in `init`, making a POST Request become a GET (latent footgun).
+    if (input instanceof Request) {
+      // Build a base Request that inherits all of the original's properties,
+      // but with the rewritten URL. The copy-constructor accepts a USVString
+      // as the first arg to change the URL while keeping everything else.
+      const base = new Request(url, input)
+      return realFetch(base, { ...init, headers })
+    }
+
     return realFetch(url, { ...init, headers })
   }) as typeof window.fetch
 }

@@ -108,7 +108,15 @@ export const useRecorderStore = defineStore('recorder', () => {
     const uploader: Uploader = {
       async upload(clip) {
         const res = await base.upload(clip)
-        if (res.ok) lastText.value = res.text
+        if (res.ok) {
+          lastText.value = res.text
+          // Refresh the session after a successful upload so the quota chip
+          // reflects the new clip count. Import lazily to avoid Pinia init-
+          // order issues (the recorder store is constructed before the Pinia
+          // instance is registered in some test setups).
+          const { useSessionStore } = await import('./session')
+          useSessionStore().refresh().catch(() => {})
+        }
         return res
       },
     }
