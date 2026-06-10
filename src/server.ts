@@ -682,16 +682,29 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
         const authed = resolveUserOrDevice(req, sessions, users, devices)
         if (!authed) return unauthorized()
 
-        // Quota gate. Check BEFORE reading the body so a capped user
-        // doesn't burn bandwidth / blob memory. 'unlimited' bypasses
-        // entirely; 'pro' is capped by PRO_TIER_LIMIT, 'free' by
-        // FREE_TIER_LIMIT (either == 0 disables that tier's gate).
+        // Atomic quota reservation. The old check-then-act gate raced under
+        // concurrency: a multi-second OpenAI call sat between getUsage() and
+        // incrementUsage(), so N parallel uploads at used=L-1 all passed and
+        // the counter landed at L-1+N (each over-limit clip = a paid call).
+        // Instead we RESERVE first — atomic UPSERT returns the post-increment
+        // count — and reject (refunding) if it exceeds the limit. Any failure
+        // after this point refunds via the `consumed` flag in the finally
+        // block below. 'unlimited' (userLimit === null) bypasses entirely.
+        // Month key is taken here, at reservation time (not request start),
+        // so a clip never increments an already-closed month.
         const month = monthKeyOf((deps.now ?? Date.now)())
         const userPlan = plans.getPlan(authed.user.id)
         const userLimit = limitFor(userPlan)
-        if (userLimit !== null) {
-          const used = plans.getUsage(authed.user.id, month)
-          if (used >= userLimit) {
+        const gated = userLimit !== null
+        let consumed = false
+        if (gated) {
+          const reserved = plans.incrementUsage(authed.user.id, month)
+          consumed = true
+          if (reserved > userLimit) {
+            // Over the cap — refund the reservation and report the
+            // pre-reservation count as `used` (post-increment - 1).
+            plans.decrementUsage(authed.user.id, month)
+            consumed = false
             return Response.json(
               {
                 error:
@@ -700,7 +713,7 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
                     : 'free tier monthly limit reached',
                 code: 'quota_exceeded',
                 plan: userPlan,
-                used,
+                used: reserved - 1,
                 limit: userLimit,
               },
               { status: 402 },
@@ -708,6 +721,11 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
           }
         }
 
+        // Everything from here to the success response runs under the
+        // reservation. Any early return (bad form, too-long clip, transcription
+        // failure) refunds via the finally block — only a fully successful
+        // upload keeps the reserved slot.
+        try {
         let form: Awaited<ReturnType<Request['formData']>>
         try {
           form = await req.formData()
@@ -842,10 +860,6 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
           rawText: resolvedPresetId ? rawTranscript : null,
         })
         if (costUsd > 0) costs.add(authed.user.id, costUsd)
-        // Bump the monthly clip counter for the quota gate. Increment AFTER
-        // transcription succeeded — failed uploads (audio too short, etc.)
-        // shouldn't count toward the limit.
-        plans.incrementUsage(authed.user.id, month)
 
         // Fan-out: push the clip to every paired Mac for this user. A Mac
         // with a live SSE stream gets it instantly; one that is offline gets
@@ -864,6 +878,8 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
           if (!live) pendingDeliveries.enqueue(d.id, clip.seq)
         }
 
+        // Success — the reservation is kept (don't refund in finally).
+        consumed = false
         return Response.json({
           text: clip.text,
           seq: clip.seq,
@@ -871,6 +887,12 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
           cost: costUsd,
           presetId: clip.presetId ?? undefined,
         })
+        } finally {
+          // Refund the reserved slot unless the upload fully succeeded. Covers
+          // every early return after reservation (bad form-data, too-long clip,
+          // transcription failure) and any unexpected throw.
+          if (consumed) plans.decrementUsage(authed.user.id, month)
+        }
       }
 
       // ---- /history ----
