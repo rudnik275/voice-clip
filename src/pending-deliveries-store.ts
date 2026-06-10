@@ -1,8 +1,13 @@
 // Server-side replay queue for offline Macs on SQLite.
 //
 // Schema (see db.ts SCHEMA_SQL):
-//   pending_deliveries(id PK, device_id, seq, created_at,
+//   pending_deliveries(id PK, device_id, seq, source, created_at,
 //                       UNIQUE(device_id, seq))
+//
+// `source` is the SSE payload's delivery intent ('online' = copy
+// unconditionally; 'offline' = history-only). It is stored on the pending row
+// rather than re-derived from history so a queued /clip/copy of an
+// offline-sourced clip still forces a pbcopy on replay. Defaults to 'online'.
 //
 // One row per (device, clip) pair that the phone uploaded while the paired
 // Mac had no live SSE stream. /upload fan-out enqueues a row whenever
@@ -20,15 +25,18 @@
 import type { DB } from './db'
 import { randomBytes } from 'node:crypto'
 
+export type DeliverySource = 'online' | 'offline'
+
 export interface PendingDeliveriesStore {
-  enqueue(deviceId: string, seq: number): void
-  listByDevice(deviceId: string): { seq: number }[]
+  enqueue(deviceId: string, seq: number, source?: DeliverySource): void
+  listByDevice(deviceId: string): { seq: number; source: DeliverySource }[]
   deleteBySeq(deviceId: string, seq: number): void
   deleteByDevice(deviceId: string): void
 }
 
-interface SeqRow {
+interface PendingRow {
   seq: number
+  source: DeliverySource
 }
 
 function newPendingId(): string {
@@ -40,12 +48,12 @@ export function createPendingDeliveriesStore(
   now: () => number = Date.now,
 ): PendingDeliveriesStore {
   const insert = db.prepare(
-    `INSERT INTO pending_deliveries (id, device_id, seq, created_at)
-     VALUES (?, ?, ?, ?)
+    `INSERT INTO pending_deliveries (id, device_id, seq, source, created_at)
+     VALUES (?, ?, ?, ?, ?)
      ON CONFLICT(device_id, seq) DO NOTHING`,
   )
-  const selectByDevice = db.query<SeqRow, [string]>(
-    'SELECT seq FROM pending_deliveries WHERE device_id = ? ORDER BY seq ASC',
+  const selectByDevice = db.query<PendingRow, [string]>(
+    'SELECT seq, source FROM pending_deliveries WHERE device_id = ? ORDER BY seq ASC',
   )
   const deleteSeqStmt = db.prepare(
     'DELETE FROM pending_deliveries WHERE device_id = ? AND seq = ?',
@@ -55,11 +63,11 @@ export function createPendingDeliveriesStore(
   )
 
   return {
-    enqueue(deviceId: string, seq: number): void {
-      insert.run(newPendingId(), deviceId, seq, now())
+    enqueue(deviceId: string, seq: number, source: DeliverySource = 'online'): void {
+      insert.run(newPendingId(), deviceId, seq, source, now())
     },
 
-    listByDevice(deviceId: string): { seq: number }[] {
+    listByDevice(deviceId: string): { seq: number; source: DeliverySource }[] {
       return selectByDevice.all(deviceId)
     },
 

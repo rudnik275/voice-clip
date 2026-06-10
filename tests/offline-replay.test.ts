@@ -56,10 +56,11 @@ async function signIn(baseUrl: string): Promise<string> {
     .split('=')[1]!
 }
 
-function audioForm(recordedAt: string): FormData {
+function audioForm(recordedAt: string, source?: 'online' | 'offline'): FormData {
   const fd = new FormData()
   fd.set('audio', new Blob([new Uint8Array([1, 2, 3, 4])], { type: 'audio/webm' }), 'clip.webm')
   fd.set('recordedAt', recordedAt)
+  if (source) fd.set('source', source)
   return fd
 }
 
@@ -166,11 +167,15 @@ describe('offline-clip replay for disconnected Macs', () => {
     const livePayload = JSON.parse(liveFrame!.slice('data: '.length).trim()) as { seq: number }
     expect(livePayload.seq).toBe(body.seq)
 
-    // Offline Mac has exactly one queued row (the same seq).
-    expect(pendingDeliveries.listByDevice(macOffline.id)).toEqual([{ seq: body.seq }])
+    // Offline Mac has exactly one queued row (the same seq), online intent.
+    expect(pendingDeliveries.listByDevice(macOffline.id)).toEqual([
+      { seq: body.seq, source: 'online' },
+    ])
     // At-least-once: the live Mac ALSO gets a pending row — live push is
     // best-effort, so the row stays until the Mac acks the pbcopy.
-    expect(pendingDeliveries.listByDevice(macLive.id)).toEqual([{ seq: body.seq }])
+    expect(pendingDeliveries.listByDevice(macLive.id)).toEqual([
+      { seq: body.seq, source: 'online' },
+    ])
 
     // Live Mac acks after pbcopy → its pending row is deleted.
     const liveAck = await fetch(`${baseUrl}/events/ack`, {
@@ -259,7 +264,9 @@ describe('offline-clip replay for disconnected Macs', () => {
     // The live push did go into the (doomed) stream buffer…
     expect(m.frames.find((f) => f.startsWith('data: '))).toBeTruthy()
     // …but the pending row survives because no ack arrived.
-    expect(pendingDeliveries.listByDevice(mac.id)).toEqual([{ seq: body.seq }])
+    expect(pendingDeliveries.listByDevice(mac.id)).toEqual([
+      { seq: body.seq, source: 'online' },
+    ])
 
     // The Mac reconnects — the unacked clip is replayed.
     const evRes = await fetch(`${baseUrl}/events?device_token=${mac.device_token}`)
@@ -321,7 +328,9 @@ describe('offline-clip replay for disconnected Macs', () => {
       const b = (await up.json()) as { seq: number }
       seqs.push(b.seq)
     }
-    expect(pendingDeliveries.listByDevice(mac.id)).toEqual(seqs.map((seq) => ({ seq })))
+    expect(pendingDeliveries.listByDevice(mac.id)).toEqual(
+      seqs.map((seq) => ({ seq, source: 'online' })),
+    )
 
     // Reconnect — all three replay in ascending seq order.
     const evRes = await fetch(`${baseUrl}/events?device_token=${mac.device_token}`)
@@ -334,7 +343,136 @@ describe('offline-clip replay for disconnected Macs', () => {
       headers: { 'x-device-token': mac.device_token, 'content-type': 'application/json' },
       body: JSON.stringify({ seq: seqs[0] }),
     })
-    expect(pendingDeliveries.listByDevice(mac.id)).toEqual(seqs.slice(1).map((seq) => ({ seq })))
+    expect(pendingDeliveries.listByDevice(mac.id)).toEqual(
+      seqs.slice(1).map((seq) => ({ seq, source: 'online' })),
+    )
+  })
+
+  test('upload with source=offline → history-only: no live frame, no pending rows', async () => {
+    db = openDb(':memory:')
+    const liveBus = createLiveBus()
+    const pendingDeliveries = createPendingDeliveriesStore(db)
+    const deps: ServerDeps = {
+      dataDir: dir,
+      port: 0,
+      useTls: false,
+      allowlist: ['alice@example.com'],
+      googleClientId: CLIENT_ID,
+      googleClientSecret: CLIENT_SECRET,
+      googleFetcher: makeGoogleFetcher({ sub: 'g1', email: 'alice@example.com', name: 'Alice' }),
+      db,
+      liveBus,
+      pendingDeliveries,
+      transcribe: async (): Promise<TranscriptionResult> => ({
+        text: 'drained offline clip',
+        usage: { audioTokens: 100, textTokens: 0, outputTokens: 0 },
+      }),
+    }
+    server = await startServer(deps)
+    baseUrl = `http://localhost:${server.port}`
+    server.stop()
+    server = await startServer({ ...deps, publicUrl: baseUrl })
+    baseUrl = `http://localhost:${server.port}`
+
+    const token = await signIn(baseUrl)
+    const users = createUsersStore(db)
+    const user = users.upsertByGoogleSub({ sub: 'g1', email: 'alice@example.com', name: 'Alice' })
+    const devices = createDevicesStore(db)
+    const macLive = devices.create(user.id, 'Mac live')
+    const macOffline = devices.create(user.id, 'Mac offline')
+
+    // A Mac IS holding a live SSE subscription — yet an offline-sourced upload
+    // must still not publish to it.
+    const live = mockController()
+    liveBus.subscribe(macLive.id, live.controller)
+
+    const up = await fetch(`${baseUrl}/upload`, {
+      method: 'POST',
+      headers: { cookie: `session=${token}` },
+      body: audioForm('2026-05-17T10:00:00.000Z', 'offline'),
+    })
+    expect(up.status).toBe(200)
+    const body = (await up.json()) as { seq: number; text: string }
+
+    // History row exists with source 'offline'.
+    const histR = await fetch(`${baseUrl}/history`, { headers: { cookie: `session=${token}` } })
+    const hist = (await histR.json()) as { items: Array<{ seq: number; source: string }> }
+    expect(hist.items).toHaveLength(1)
+    expect(hist.items[0]?.seq).toBe(body.seq)
+    expect(hist.items[0]?.source).toBe('offline')
+
+    // No live frame published to the subscribed Mac.
+    expect(live.frames.some((f) => f.startsWith('data: '))).toBe(false)
+
+    // No pending rows enqueued for ANY device.
+    expect(pendingDeliveries.listByDevice(macLive.id)).toEqual([])
+    expect(pendingDeliveries.listByDevice(macOffline.id)).toEqual([])
+  })
+
+  test('/clip/copy of an offline-sourced clip preserves copy intent on replay (source online)', async () => {
+    db = openDb(':memory:')
+    const liveBus = createLiveBus()
+    const pendingDeliveries = createPendingDeliveriesStore(db)
+    const deps: ServerDeps = {
+      dataDir: dir,
+      port: 0,
+      useTls: false,
+      allowlist: ['alice@example.com'],
+      googleClientId: CLIENT_ID,
+      googleClientSecret: CLIENT_SECRET,
+      googleFetcher: makeGoogleFetcher({ sub: 'g1', email: 'alice@example.com', name: 'Alice' }),
+      db,
+      liveBus,
+      pendingDeliveries,
+      transcribe: async (): Promise<TranscriptionResult> => ({
+        text: 'stale offline clip',
+        usage: { audioTokens: 100, textTokens: 0, outputTokens: 0 },
+      }),
+    }
+    server = await startServer(deps)
+    baseUrl = `http://localhost:${server.port}`
+    server.stop()
+    server = await startServer({ ...deps, publicUrl: baseUrl })
+    baseUrl = `http://localhost:${server.port}`
+
+    const token = await signIn(baseUrl)
+    const users = createUsersStore(db)
+    const user = users.upsertByGoogleSub({ sub: 'g1', email: 'alice@example.com', name: 'Alice' })
+    const devices = createDevicesStore(db)
+    const mac = devices.create(user.id, 'Offline Mac')
+
+    // Upload an OFFLINE-sourced clip: history-only, no fan-out, no pending rows.
+    const up = await fetch(`${baseUrl}/upload`, {
+      method: 'POST',
+      headers: { cookie: `session=${token}` },
+      body: audioForm('2026-05-17T10:00:00.000Z', 'offline'),
+    })
+    expect(up.status).toBe(200)
+    const body = (await up.json()) as { seq: number }
+    // The offline upload must NOT have enqueued anything for the Mac.
+    expect(pendingDeliveries.listByDevice(mac.id)).toEqual([])
+
+    // User explicitly taps "copy" on that old (offline-sourced) clip while the
+    // Mac has no live SSE stream → it queues with copy-unconditionally intent.
+    const copyR = await fetch(`${baseUrl}/clip/copy`, {
+      method: 'POST',
+      headers: { cookie: `session=${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ seq: body.seq }),
+    })
+    expect(copyR.status).toBe(200)
+    expect((await copyR.json()) as { ok: boolean; devices: number }).toEqual({
+      ok: true,
+      devices: 1,
+    })
+    expect(pendingDeliveries.listByDevice(mac.id)).toEqual([{ seq: body.seq, source: 'online' }])
+
+    // On reconnect the replayed frame carries source 'online' (copy intent),
+    // NOT the clip's original 'offline' history source.
+    const evRes = await fetch(`${baseUrl}/events?device_token=${mac.device_token}`)
+    const replayed = (await readDataFrames(evRes, 1)) as Array<{ seq: number; source: string }>
+    expect(replayed).toHaveLength(1)
+    expect(replayed[0]!.seq).toBe(body.seq)
+    expect(replayed[0]!.source).toBe('online')
   })
 
   test('/events/ack with a missing/malformed body still acks liveness (does not 500)', async () => {

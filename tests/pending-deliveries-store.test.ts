@@ -19,10 +19,20 @@ function setup(now: () => number = Date.now) {
 }
 
 describe('pending-deliveries-store (SQLite)', () => {
-  test('enqueue then listByDevice returns the seq', () => {
+  test('enqueue then listByDevice returns the seq (default source online)', () => {
     const { pending, device } = setup()
     pending.enqueue(device.id, 7)
-    expect(pending.listByDevice(device.id)).toEqual([{ seq: 7 }])
+    expect(pending.listByDevice(device.id)).toEqual([{ seq: 7, source: 'online' }])
+  })
+
+  test('enqueue persists the delivery intent (source) per row', () => {
+    const { pending, device } = setup()
+    pending.enqueue(device.id, 1, 'offline')
+    pending.enqueue(device.id, 2, 'online')
+    expect(pending.listByDevice(device.id)).toEqual([
+      { seq: 1, source: 'offline' },
+      { seq: 2, source: 'online' },
+    ])
   })
 
   test('listByDevice returns rows ordered by seq ASC regardless of insert order', () => {
@@ -30,7 +40,11 @@ describe('pending-deliveries-store (SQLite)', () => {
     pending.enqueue(device.id, 30)
     pending.enqueue(device.id, 10)
     pending.enqueue(device.id, 20)
-    expect(pending.listByDevice(device.id)).toEqual([{ seq: 10 }, { seq: 20 }, { seq: 30 }])
+    expect(pending.listByDevice(device.id)).toEqual([
+      { seq: 10, source: 'online' },
+      { seq: 20, source: 'online' },
+      { seq: 30, source: 'online' },
+    ])
   })
 
   test('listByDevice is scoped per device', () => {
@@ -41,8 +55,11 @@ describe('pending-deliveries-store (SQLite)', () => {
     pending.enqueue(a.id, 1)
     pending.enqueue(a.id, 2)
     pending.enqueue(b.id, 9)
-    expect(pending.listByDevice(a.id)).toEqual([{ seq: 1 }, { seq: 2 }])
-    expect(pending.listByDevice(b.id)).toEqual([{ seq: 9 }])
+    expect(pending.listByDevice(a.id)).toEqual([
+      { seq: 1, source: 'online' },
+      { seq: 2, source: 'online' },
+    ])
+    expect(pending.listByDevice(b.id)).toEqual([{ seq: 9, source: 'online' }])
     void db
   })
 
@@ -51,7 +68,7 @@ describe('pending-deliveries-store (SQLite)', () => {
     pending.enqueue(device.id, 5)
     pending.enqueue(device.id, 5)
     pending.enqueue(device.id, 5)
-    expect(pending.listByDevice(device.id)).toEqual([{ seq: 5 }])
+    expect(pending.listByDevice(device.id)).toEqual([{ seq: 5, source: 'online' }])
   })
 
   test('deleteBySeq removes only the matching row and is idempotent', () => {
@@ -59,11 +76,11 @@ describe('pending-deliveries-store (SQLite)', () => {
     pending.enqueue(device.id, 1)
     pending.enqueue(device.id, 2)
     pending.deleteBySeq(device.id, 1)
-    expect(pending.listByDevice(device.id)).toEqual([{ seq: 2 }])
+    expect(pending.listByDevice(device.id)).toEqual([{ seq: 2, source: 'online' }])
     // Deleting a seq that is no longer there (or never was) does not throw.
     expect(() => pending.deleteBySeq(device.id, 1)).not.toThrow()
     expect(() => pending.deleteBySeq(device.id, 999)).not.toThrow()
-    expect(pending.listByDevice(device.id)).toEqual([{ seq: 2 }])
+    expect(pending.listByDevice(device.id)).toEqual([{ seq: 2, source: 'online' }])
   })
 
   test('deleteByDevice clears the whole queue for that device only', () => {
@@ -75,7 +92,7 @@ describe('pending-deliveries-store (SQLite)', () => {
     pending.enqueue(b.id, 3)
     pending.deleteByDevice(a.id)
     expect(pending.listByDevice(a.id)).toEqual([])
-    expect(pending.listByDevice(b.id)).toEqual([{ seq: 3 }])
+    expect(pending.listByDevice(b.id)).toEqual([{ seq: 3, source: 'online' }])
   })
 
   test('cascade: deleting a device removes its pending rows (FK ON DELETE CASCADE)', () => {

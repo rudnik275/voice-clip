@@ -83,10 +83,16 @@ const SCHEMA_SQL = `
   -- deletes the matching row. UNIQUE(device_id, seq) makes enqueue idempotent
   -- under at-least-once fan-out. Cascades on device (and transitively user)
   -- delete so a revoked Mac never leaves an orphan queue.
+  -- The source column carries the SSE payload delivery intent (online = copy
+  -- unconditionally, e.g. an explicit /clip/copy; offline = history-only).
+  -- It is stored per pending row rather than read back from history so a
+  -- queued /clip/copy of an offline-sourced clip still forces a pbcopy on
+  -- replay. Added via additive ALTER TABLE migration (see openDb).
   CREATE TABLE IF NOT EXISTS pending_deliveries (
     id          TEXT PRIMARY KEY,
     device_id   TEXT NOT NULL,
     seq         INTEGER NOT NULL,
+    source      TEXT NOT NULL DEFAULT 'online',
     created_at  INTEGER NOT NULL,
     FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE,
     UNIQUE(device_id, seq)
@@ -239,6 +245,18 @@ export function openDb(path: string): DB {
   // lower(trim(email)) is a no-op on already-normalized rows, so this is safe
   // to run on every boot.
   db.exec('UPDATE users SET email = lower(trim(email))')
+
+  // Idempotent migration: add the delivery-intent `source` column to
+  // pending_deliveries. Carries the SSE payload's `source` value (the
+  // copy-unconditionally intent) so a queued /clip/copy still forces a pbcopy
+  // on replay even when the underlying history clip was offline-sourced.
+  // DEFAULT 'online' keeps existing rows behaving as before (the only prior
+  // enqueue path was /upload + /clip/copy, both of which a client should copy).
+  try {
+    db.exec("ALTER TABLE pending_deliveries ADD COLUMN source TEXT NOT NULL DEFAULT 'online'")
+  } catch {
+    // column already present — safe to ignore
+  }
 
   return db
 }
