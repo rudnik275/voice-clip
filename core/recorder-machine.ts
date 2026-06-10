@@ -164,7 +164,12 @@ export class RecorderMachine {
         if (event === 'STOP') return 'finalizing';
         return null;
       case 'paused':
-        if (event === 'PAUSE_TOGGLE') return 'recording';
+        if (event === 'PAUSE_TOGGLE') {
+          // guard: manual resume must mirror the FOREGROUNDED guard — a track
+          // iOS killed during the pause (call/Siri) must NOT be re-enabled and
+          // recorded as silence. Alive → resume recording; dead → finalize.
+          return this.adapter.isTrackLive() ? 'recording' : 'finalizing';
+        }
         if (event === 'FOREGROUNDED') {
           // guard: alive track → resume recording; dead track → finalize
           // (never silently keep recording silence).
@@ -219,10 +224,16 @@ export class RecorderMachine {
       return;
     }
 
-    // paused --PAUSE_TOGGLE--> recording : prime then enable (invariant 7)
-    if (from === 'paused' && event === 'PAUSE_TOGGLE') {
+    // paused --PAUSE_TOGGLE--> recording (track alive) : prime then enable (invariant 7)
+    if (from === 'paused' && event === 'PAUSE_TOGGLE' && to === 'recording') {
       this.adapter.primeAudioSession();
       this.adapter.resume();
+      return;
+    }
+
+    // paused --PAUSE_TOGGLE--> finalizing (track dead) : do NOT record silence
+    if (from === 'paused' && event === 'PAUSE_TOGGLE' && to === 'finalizing') {
+      this.beginFinalize();
       return;
     }
 

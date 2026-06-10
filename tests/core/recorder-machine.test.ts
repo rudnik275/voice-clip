@@ -203,6 +203,22 @@ describe('iOS invariant 3 — pause via track.enabled, never MediaRecorder.pause
     // invariant 7: prime before resume, and in that order
     expect(adapter.calls).toEqual(['primeAudioSession', 'resume']);
   });
+
+  test('PAUSE_TOGGLE resume with a DEAD track finalizes (never re-records silence)', async () => {
+    // Manual pause → iOS kills the track (call/Siri) → manual resume must mirror
+    // the FOREGROUNDED dead-track guard: finalize instead of re-enabling a dead
+    // track and recording silence forever (issue #134 bug 3).
+    const { machine, adapter } = make();
+    await toRecording({ machine, adapter });
+    machine.send('PAUSE_TOGGLE'); // -> paused
+    adapter.trackLive = false; // track died during the pause
+    adapter.calls.length = 0;
+    machine.send('PAUSE_TOGGLE');
+    expect(machine.state).toBe('finalizing');
+    expect(adapter.finalizeCount).toBe(1);
+    // must NOT have re-enabled a dead track
+    expect(adapter.calls).not.toContain('resume');
+  });
 });
 
 describe('iOS invariant 5 — MediaRecorder.start(250) timeslice', () => {
