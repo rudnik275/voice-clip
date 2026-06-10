@@ -567,7 +567,9 @@ export async function startServer(deps: ServerDeps): Promise<RunningServer> {
         if (!isAdminRequest(req)) return new Response('Unauthorized', { status: 401 })
         if (method !== 'GET') return new Response('Method Not Allowed', { status: 405 })
         const includeResolved = url.searchParams.get('all') === '1'
-        const limit = Math.min(500, Number(url.searchParams.get('limit') ?? 200))
+        const limitRaw = url.searchParams.get('limit')
+        const limitParsed = limitRaw !== null ? Number(limitRaw) : undefined
+        const limit = Math.min(500, Number.isFinite(limitParsed) ? (limitParsed as number) : 200)
         const rows = errors.list({ limit, includeResolved })
         // Join the user name for at-a-glance triage.
         const out = rows.map((e) => {

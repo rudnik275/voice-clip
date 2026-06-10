@@ -256,6 +256,26 @@ describe('observability: /api/errors + /admin/errors + replay', () => {
     expect(no.status).toBe(400)
   })
 
+  test('GET /admin/errors?limit=abc → 200 with default limit (NaN guard)', async () => {
+    await start()
+    // Seed a couple of error rows via /api/errors
+    for (const msg of ['err1', 'err2']) {
+      await fetch(`${baseUrl}/api/errors`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ type: 'js_exception', message: msg }),
+      })
+    }
+    // Non-numeric limit must NOT produce a 500 — it should fall back to the
+    // default (200) and return the rows normally.
+    const r = await fetch(`${baseUrl}/admin/errors?limit=abc`, {
+      headers: { 'x-admin-token': ADMIN_TOKEN },
+    })
+    expect(r.status).toBe(200)
+    const rows = (await r.json()) as { message: string }[]
+    expect(rows.length).toBe(2)
+  })
+
   test('Failed-audio dir is created lazily and survives multiple users', async () => {
     let calls = 0
     await start(async () => {

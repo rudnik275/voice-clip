@@ -190,16 +190,24 @@ const SCHEMA_SQL = `
 // Idempotent column additions for history table — SQLite does not support
 // `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, so we attempt the migration and
 // swallow the "duplicate column name" error if it already ran on this DB.
+// Any other error (I/O failure, lock at boot, schema corruption) is re-thrown
+// so callers learn about it immediately instead of silently degrading.
+// Exported for unit tests.
+export function tryAddColumn(db: Database, sql: string): void {
+  try {
+    db.exec(sql)
+  } catch (e) {
+    if (!String((e as Error).message).includes('duplicate column')) throw e
+    // "duplicate column name" — already migrated; safe to ignore.
+  }
+}
+
 function migrateHistoryColumns(db: Database): void {
   for (const col of [
     'ALTER TABLE history ADD COLUMN preset_id TEXT',
     'ALTER TABLE history ADD COLUMN raw_text TEXT',
   ]) {
-    try {
-      db.exec(col)
-    } catch {
-      // "duplicate column name" — already migrated; safe to ignore.
-    }
+    tryAddColumn(db, col)
   }
 }
 
@@ -212,18 +220,25 @@ export function openDb(path: string): DB {
   // OAuth callbacks write the user/session rows.
   if (path !== ':memory:') db.exec('PRAGMA journal_mode = WAL')
   db.exec('PRAGMA foreign_keys = ON')
+  // 5 s retry window for SQLITE_BUSY — the Litestream sidecar holds brief
+  // write locks during WAL checkpoints and can collide with in-flight
+  // session-touch UPDATEs. Without a timeout the default is 0 (fail
+  // immediately), which surfaces as a 5xx to the user.
+  db.exec('PRAGMA busy_timeout = 5000')
   db.exec(SCHEMA_SQL)
   migrateHistoryColumns(db)
 
   // Idempotent migration: add the `plan` column to allowed_emails for DBs
   // created before this column was added to the SCHEMA_SQL above.
   // CREATE TABLE IF NOT EXISTS won't re-add the column; ALTER TABLE will throw
-  // "duplicate column name" if it already exists — catch and ignore.
-  try {
-    db.exec('ALTER TABLE allowed_emails ADD COLUMN plan TEXT')
-  } catch {
-    // column already present — safe to ignore
-  }
+  // "duplicate column name" if it already exists — rethrow any other error.
+  tryAddColumn(db, 'ALTER TABLE allowed_emails ADD COLUMN plan TEXT')
+
+  // One-time idempotent email normalization: older rows may have been stored
+  // with mixed-case emails (before upsertByGoogleSub normalized at write).
+  // lower(trim(email)) is a no-op on already-normalized rows, so this is safe
+  // to run on every boot.
+  db.exec('UPDATE users SET email = lower(trim(email))')
 
   return db
 }
