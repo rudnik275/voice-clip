@@ -35,9 +35,25 @@ describe('live-bus (in-memory pub/sub keyed by device_id)', () => {
     const bus = createLiveBus()
     const m = mockController()
     bus.subscribe('dev-1', m.controller)
-    bus.unsubscribe('dev-1')
+    bus.unsubscribe('dev-1', m.controller)
     expect(bus.publish('dev-1', { seq: 2 })).toBe(false)
     expect(m.chunks).toHaveLength(0)
+  })
+
+  test('stale unsubscribe (old controller identity) does not detach a replacement subscriber', () => {
+    const bus = createLiveBus()
+    const a = mockController()
+    const b = mockController()
+    // Old connection A is replaced by reconnect B, THEN the runtime fires
+    // A's late cancel() → unsubscribe with A's identity. B must stay
+    // subscribed and keep receiving publishes.
+    bus.subscribe('dev-1', a.controller)
+    bus.subscribe('dev-1', b.controller)
+    bus.unsubscribe('dev-1', a.controller)
+
+    expect(bus.publish('dev-1', { seq: 3, text: 'still-live' })).toBe(true)
+    expect(b.decode()).toContain('still-live')
+    expect(a.chunks).toHaveLength(0)
   })
 
   test('publish is routed per device — only the matching subscriber gets it', () => {

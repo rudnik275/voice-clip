@@ -156,6 +156,66 @@ describe('/upload fan-out to a user devices via live-bus', () => {
     }
   })
 
+  test('stale unsubscribe after a reconnect does not detach the new subscriber — upload still reaches it', async () => {
+    db = openDb(':memory:')
+    const liveBus = createLiveBus()
+    const deps: ServerDeps = {
+      dataDir: dir,
+      port: 0,
+      useTls: false,
+      allowlist: ['alice@example.com'],
+      googleClientId: CLIENT_ID,
+      googleClientSecret: CLIENT_SECRET,
+      googleFetcher: makeGoogleFetcher({ sub: 'g1', email: 'alice@example.com', name: 'Alice' }),
+      db,
+      liveBus,
+      transcribe: async (): Promise<TranscriptionResult> => ({
+        text: 'после реконнекта',
+        usage: { audioTokens: 1000, textTokens: 0, outputTokens: 0 },
+      }),
+    }
+    server = await startServer(deps)
+    baseUrl = `http://localhost:${server.port}`
+    server.stop()
+    server = await startServer({ ...deps, publicUrl: baseUrl })
+    baseUrl = `http://localhost:${server.port}`
+
+    const token = await signIn(baseUrl)
+    const users = createUsersStore(db)
+    const user = users.upsertByGoogleSub({ sub: 'g1', email: 'alice@example.com', name: 'Alice' })
+    const devices = createDevicesStore(db)
+    const mac = devices.create(user.id, 'Mac A')
+
+    // Old connection A dies undetected; the client reconnects as B (which
+    // replaces A in the bus); THEN the runtime fires A's late cancel(),
+    // which unsubscribes with A's controller identity.
+    const a = mockController()
+    const b = mockController()
+    liveBus.subscribe(mac.id, a.controller)
+    liveBus.subscribe(mac.id, b.controller)
+    liveBus.unsubscribe(mac.id, a.controller)
+
+    // The new connection B must still receive live publishes.
+    const up = await fetch(`${baseUrl}/upload`, {
+      method: 'POST',
+      headers: { cookie: `session=${token}` },
+      body: audioForm('2026-05-17T10:00:00.000Z'),
+    })
+    expect(up.status).toBe(200)
+    const body = (await up.json()) as { seq: number }
+
+    const dataFrame = b.frames.find((f) => f.startsWith('data: '))
+    expect(dataFrame).toBeTruthy()
+    const payload = JSON.parse(dataFrame!.slice('data: '.length).trim()) as {
+      seq: number
+      text: string
+    }
+    expect(payload.seq).toBe(body.seq)
+    expect(payload.text).toBe('после реконнекта')
+    // The dead old stream got nothing.
+    expect(a.frames.filter((f) => f.startsWith('data: '))).toHaveLength(0)
+  })
+
   test('/clip/copy re-sends a past history clip to the paired Macs', async () => {
     db = openDb(':memory:')
     const liveBus = createLiveBus()
