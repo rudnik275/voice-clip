@@ -103,12 +103,20 @@ jobs:
       # job rolled the image but never copied compose/litestream changes —
       # only redeploy.sh / bootstrap-deploy.sh scp'd them, so a compose-only
       # merge on master was silently a no-op on the VPS.
+      - name: Load secrets from 1Password
+        uses: 1password/load-secrets-action@v4
+        with:
+          export-env: true
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          SSH_PRIVATE_KEY: "op://VoiceClip/voice-clip-deploy-1p/private key?ssh-format=openssh"
+
       - name: Sync compose + litestream.yml to VPS
         uses: appleboy/scp-action@v1
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          host: 46.62.229.131
+          username: deploy
+          key: ${{ env.SSH_PRIVATE_KEY }}
           source: "docker-compose.prod.yml,litestream.yml"
           target: /opt/voice-clip/
           overwrite: true
@@ -119,9 +127,9 @@ jobs:
           GH_ACTOR: ${{ github.actor }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          host: 46.62.229.131
+          username: deploy
+          key: ${{ env.SSH_PRIVATE_KEY }}
           envs: GH_ACTOR,GH_TOKEN
           script: |
             echo "$GH_TOKEN" | docker login ghcr.io -u "$GH_ACTOR" --password-stdin
@@ -133,9 +141,9 @@ jobs:
       - name: Health-gate (60s poll)
         uses: appleboy/ssh-action@v1
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          host: 46.62.229.131
+          username: deploy
+          key: ${{ env.SSH_PRIVATE_KEY }}
           script: |
             for i in $(seq 1 12); do
               status=$(docker inspect --format '{{.State.Health.Status}}' voice-clip 2>/dev/null || echo "none")
@@ -148,9 +156,9 @@ jobs:
         if: failure()
         uses: appleboy/ssh-action@v1
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          host: 46.62.229.131
+          username: deploy
+          key: ${{ env.SSH_PRIVATE_KEY }}
           script: |
             PREV=$(cat /opt/voice-clip/.last-image-id 2>/dev/null || echo "none")
             if [ "$PREV" != "none" ] && [ -n "$PREV" ]; then
