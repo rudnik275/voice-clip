@@ -27,6 +27,16 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Load secrets from 1Password
+        uses: 1password/load-secrets-action@v4
+        with:
+          export-env: true
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: "op://VoiceClip/tauri-signing-key/key"
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: "op://VoiceClip/tauri-signing-key passphrase/password"
+          SSH_PRIVATE_KEY: "op://VoiceClip/voice-clip-deploy-1p/private key?ssh-format=openssh"
+
       - name: Install Rust toolchain (stable, universal targets)
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -57,8 +67,8 @@ jobs:
           # PUBLIC_URL inherits from the job-level env block above (used both
           # by the compiled binary's option_env! and by the latest.json URL
           # rewrite step below).
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ env.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # tauri-action names artifacts with the version (Voice Clip_X.Y.Z_…),
@@ -108,18 +118,18 @@ jobs:
       - name: Stage mirror dir on VPS
         uses: appleboy/ssh-action@v1
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          host: 46.62.229.131
+          username: deploy
+          key: ${{ env.SSH_PRIVATE_KEY }}
           script: |
             mkdir -p /opt/voice-clip/data/desktop/incoming
 
       - name: Upload artifacts to VPS staging
         uses: appleboy/scp-action@v1
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          host: 46.62.229.131
+          username: deploy
+          key: ${{ env.SSH_PRIVATE_KEY }}
           source: "voice-clip.dmg,voice-clip.app.tar.gz,latest.json"
           target: /opt/voice-clip/data/desktop/incoming/
           overwrite: true
@@ -127,9 +137,9 @@ jobs:
       - name: Promote staged artifacts atomically
         uses: appleboy/ssh-action@v1
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          host: 46.62.229.131
+          username: deploy
+          key: ${{ env.SSH_PRIVATE_KEY }}
           script: |
             set -euo pipefail
             cd /opt/voice-clip/data/desktop
