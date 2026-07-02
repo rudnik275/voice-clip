@@ -3,6 +3,8 @@
 
 import { config } from './config'
 import { startServer } from './server'
+import { startTelegramBot, type TelegramBotHandle } from './telegram-bot'
+import { transcribeAudio } from './transcribe'
 
 const server = await startServer({
   dataDir: config.dataDir,
@@ -18,8 +20,20 @@ const server = await startServer({
 
 console.log(`voice-clip listening on :${server.port}`)
 
+// Optional personal Telegram transcription bot — only starts when a token is
+// configured. Runs as a background long-poll loop alongside the HTTP server.
+let telegramBot: TelegramBotHandle | undefined
+if (config.telegramBotToken) {
+  telegramBot = startTelegramBot({
+    token: config.telegramBotToken,
+    allowedUserIds: new Set(config.telegramAllowedUserIds),
+    transcribe: transcribeAudio,
+  })
+}
+
 function shutdown(signal: string) {
   console.log(`received ${signal}, shutting down`)
+  telegramBot?.stop()
   server.stop()
   process.exit(0)
 }

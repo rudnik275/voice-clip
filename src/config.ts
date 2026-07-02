@@ -15,6 +15,14 @@ function parseAllowlist(raw: string | undefined): string[] {
     .filter((s) => s.length > 0)
 }
 
+function parseTelegramIds(raw: string | undefined): number[] {
+  if (!raw) return []
+  return raw
+    .split(',')
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isInteger(n) && n !== 0)
+}
+
 export const config = {
   openaiApiKey: requireEnv('OPENAI_API_KEY'),
   googleClientId: requireEnv('GOOGLE_OAUTH_CLIENT_ID'),
@@ -31,6 +39,12 @@ export const config = {
   // set, ops scripts can hit them via X-Admin-Token. Unset → all admin
   // routes return 401 (the owner session is still a valid alternative).
   adminToken: process.env.ADMIN_TOKEN,
+  // Optional personal Telegram transcription bot (owner-only). When
+  // TELEGRAM_BOT_TOKEN is unset the bot never starts. TELEGRAM_ALLOWED_USER_IDS
+  // is a comma-separated allowlist of numeric Telegram user IDs; empty → the
+  // bot runs in "setup mode" and replies to any sender with their own ID.
+  telegramBotToken: process.env.TELEGRAM_BOT_TOKEN,
+  telegramAllowedUserIds: parseTelegramIds(process.env.TELEGRAM_ALLOWED_USER_IDS),
   port: Number(process.env.PORT ?? 8080),
   dataDir: process.env.DATA_DIR ?? './data',
   // TLS terminates at Cloudflare Tunnel; container always serves plain HTTP.
