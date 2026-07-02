@@ -107,16 +107,22 @@ export function chunkForTelegram(text: string, limit = TELEGRAM_TEXT_LIMIT): str
   return chunks
 }
 
-// Choose a filename whose extension OpenAI can map to the right content-type.
-// The extension is the ONLY mime signal transcribeAudio passes through, so it
-// must match the actual audio container (voice = .oga, video_note = .mp4, …).
+// Choose a filename whose extension OpenAI can map to a supported format. The
+// extension is the ONLY mime signal transcribeAudio passes through.
+//
+// Telegram voice notes arrive as `.oga` (OGG/Opus), but OpenAI's transcription
+// endpoint rejects the `.oga`/`.opus` extension variants with
+// `400 Unsupported file format oga` even though the bytes are ordinary OGG —
+// it only accepts `.ogg`. Same container, different label, so normalizing the
+// extension is enough (no transcode needed).
 export function telegramFilename(filePath: string, msg: TgMessage): string {
-  const ext = extname(filePath).toLowerCase()
+  let ext = extname(filePath).toLowerCase()
+  if (ext === '.oga' || ext === '.opus') ext = '.ogg'
   if (ext) return `clip${ext}`
-  if (msg.voice) return 'clip.oga'
+  if (msg.voice) return 'clip.ogg'
   if (msg.video_note) return 'clip.mp4'
   if (msg.audio) return msg.audio.file_name ?? 'clip.mp3'
-  return 'clip.oga'
+  return 'clip.ogg'
 }
 
 function pickMedia(msg: TgMessage): TgFileRef | undefined {
