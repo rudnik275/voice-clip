@@ -80,12 +80,15 @@ test('chunkForTelegram splits long text under the limit, prefers space breaks', 
 })
 
 test('telegramFilename derives extension from the Telegram file_path', () => {
-  expect(telegramFilename('voice/abc.oga', voiceMsg(1))).toBe('clip.oga')
+  // .oga/.opus normalize to .ogg — OpenAI rejects the .oga extension variant.
+  expect(telegramFilename('voice/abc.oga', voiceMsg(1))).toBe('clip.ogg')
+  expect(telegramFilename('voice/abc.opus', voiceMsg(1))).toBe('clip.ogg')
+  expect(telegramFilename('music/x.mp3', voiceMsg(1))).toBe('clip.mp3')
   expect(telegramFilename('video_notes/x.mp4', voiceMsg(1, { voice: undefined, video_note: { file_id: 'v' } }))).toBe(
     'clip.mp4',
   )
-  // No extension in path → falls back to a sane default per media type.
-  expect(telegramFilename('voice/noext', voiceMsg(1))).toBe('clip.oga')
+  // No extension in path → falls back to a sane (OpenAI-supported) default.
+  expect(telegramFilename('voice/noext', voiceMsg(1))).toBe('clip.ogg')
 })
 
 // ─── handleMessage behavior ─────────────────────────────────────────────────
@@ -113,7 +116,8 @@ test('transcribe receives a filename with the file_path extension', async () => 
   const deps: HandlerDeps = { api, transcribe, allowedUserIds: new Set([111]) }
 
   await handleMessage(voiceMsg(111), deps)
-  expect(filenames).toEqual(['clip.oga'])
+  // fake getFilePath returns a `.oga` path → normalized to `.ogg` for OpenAI.
+  expect(filenames).toEqual(['clip.ogg'])
 })
 
 test('transcript HTML special chars are escaped inside <code>', async () => {
