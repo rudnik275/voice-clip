@@ -744,6 +744,17 @@ fn main() {
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running Voice Clip");
+        .build(tauri::generate_context!())
+        .expect("error while building Voice Clip")
+        // Clicking the macOS dock icon fires a "reopen" event (AppKit's
+        // applicationShouldHandleReopen). This is a menu-bar app that HIDES
+        // the window on close instead of quitting, so after a close the dock
+        // icon looked dead — nothing re-showed the hidden window. Re-show and
+        // focus it, matching the tray "Open Voice Clip" / left-click paths.
+        .run(|app_handle, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = event {
+                focus_window(app_handle);
+            }
+        });
 }
