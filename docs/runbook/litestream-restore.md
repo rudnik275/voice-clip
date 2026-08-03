@@ -100,7 +100,7 @@ docker logs -f voice-clip
 | `ERROR: voice-clip container is still running` | Run `docker compose -f /opt/voice-clip/docker-compose.prod.yml stop voice-clip` then re-run the script. |
 | `integrity_check` fails | The downloaded file is corrupt. Check litestream logs, try restoring an older snapshot by running litestream restore with explicit `-timestamp` flag. |
 | `no replica exists` info message | No backup has been uploaded yet — start the app normally (fresh deploy). |
-| S3 auth error during restore | Verify `LITESTREAM_S3_ACCESS_KEY_ID` and `LITESTREAM_S3_SECRET_ACCESS_KEY` in `/opt/voice-clip/.env` match the Hetzner Console credentials. |
+| S3 auth error during restore | Verify `LITESTREAM_S3_ACCESS_KEY_ID` and `LITESTREAM_S3_SECRET_ACCESS_KEY` in `/opt/voice-clip/.env` match the Hetzner Console credentials. The correct 1Password item is **`hetzner-s3-backups`** (vault `SlotRanker`) — NOT `hetzner-s3`, which was renamed 2026-08-03 and now points at a different bucket entirely. |
 | Wrong endpoint | `LITESTREAM_S3_ENDPOINT` must be the full HTTPS URL, e.g. `https://fsn1.your-objectstorage.com`. |
 
 ---
