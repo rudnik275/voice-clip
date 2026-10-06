@@ -16,6 +16,10 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
     env_file: .env
+    environment:
+      # Internal transcription for sibling services on infra-net (family-budget
+      # bot) — deliberately NOT in `ports` and not in any tunnel ingress (ADR 0007).
+      INTERNAL_TRANSCRIBE_PORT: "8090"
     volumes:
       # SQLite db + WAL + per-user state live here. Persists across image rolls.
       - ./data:/data
