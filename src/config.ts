@@ -45,6 +45,12 @@ export const config = {
   // bot runs in "setup mode" and replies to any sender with their own ID.
   telegramBotToken: process.env.TELEGRAM_BOT_TOKEN,
   telegramAllowedUserIds: parseTelegramIds(process.env.TELEGRAM_ALLOWED_USER_IDS),
+  // Optional internal transcription port for sibling services on the VPS
+  // (family-budget bot). Unset → not started. Never published by a tunnel —
+  // reachable only on the docker network (src/internal-transcribe.ts, ADR 0007).
+  internalTranscribePort: process.env.INTERNAL_TRANSCRIBE_PORT
+    ? Number(process.env.INTERNAL_TRANSCRIBE_PORT)
+    : undefined,
   port: Number(process.env.PORT ?? 8080),
   dataDir: process.env.DATA_DIR ?? './data',
   // TLS terminates at Cloudflare Tunnel; container always serves plain HTTP.
